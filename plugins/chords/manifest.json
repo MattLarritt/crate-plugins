@@ -1,0 +1,9 @@
+{
+  "id": "chords",
+  "name": "Chords & notes",
+  "version": "1.0.0",
+  "description": "Type or import guitar chords with lyrics for the playing song — Ultimate Guitar links paste straight in. Private per user.",
+  "server": "server.js",
+  "client": "client.js",
+  "css": "style.css"
+}

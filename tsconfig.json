@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "crate/*": ["./types/crate-modules"],
+      "react": ["./node_modules/@types/react"]
+    }
+  },
+  "include": ["plugins/**/server/**/*.ts", "plugins/**/client/**/*.ts", "plugins/**/client/**/*.tsx", "types"]
+}

@@ -1,0 +1,347 @@
+/*
+ * The chords plugin's styles, imported by its index module — Vite folds this into the one
+ * bundle CSS. The --mono token this leans on stays global in styles.css: it is a design token,
+ * not a chord concern.
+ */
+
+/* ---- chord sheets -------------------------------------------------------
+   Set like sheet music rather than like a web page: wide, paged sideways in
+   columns, and monospace throughout so a chord positioned at character 19
+   lands over the syllable the parser said it does. See web/src/chords.tsx. */
+
+.chordpanel {
+  position: fixed;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg2) 97%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--bd);
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  /* The WHOLE window above the play bar, app header included. Chords are read from a
+     metre away with both hands busy, and every pixel that is not the sheet is a pixel
+     arguing for itself — so there is no inset, no radius, and no gap at the top. */
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--bd);
+}
+@media (max-width: 820px) {
+  .chordpanel { bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+}
+
+.chordhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--bd);
+  flex: none;
+}
+/* Sized in height only; the viewBox carries the aspect. */
+.chordlogo { height: 17px; width: auto; flex: none; opacity: 0.85; }
+@media (max-width: 620px) { .chordlogo { display: none; } }
+.chordhead .words { min-width: 0; flex: 1; }
+.chordhead .t { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chordhead .s { font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.csource { font-size: 0.78rem; text-decoration: none; border-bottom: 1px dotted var(--bd); }
+.csource:hover { color: var(--fg); }
+
+/* Every chord in the song, once — across the top, or down the left, or not at all.
+   Same markup either way; only the axis and which edge carries the rule change. */
+.cstrip { flex: none; display: flex; gap: 6px; scrollbar-width: thin; }
+.cstrip.top {
+  flex-direction: row;
+  overflow-x: auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bd);
+}
+.cstrip.left {
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 8px;
+  border-right: 1px solid var(--bd);
+}
+
+/* The sheet and, optionally, the rail beside it. */
+.chordmain { flex: 1; min-height: 0; display: flex; }
+.cstripitem {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 7px 5px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.cstripitem:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.cstripitem.on { border-color: var(--acc); background: var(--acc-soft); }
+.cstripitem .n { font-weight: 700; font-size: 0.8rem; letter-spacing: -0.01em; }
+.cnodiagram { color: var(--muted); font-size: 1.4rem; line-height: 46px; }
+
+/* Chord diagrams. Strings and frets hairline, dots solid — a chart, not a photo. */
+.cdiagram .string,
+.cdiagram .fret {
+  stroke: var(--muted);
+  stroke-width: 0.7;
+  opacity: 0.65;
+}
+.cdiagram .nut { stroke: var(--fg); stroke-width: 2; opacity: 0.8; }
+.cdiagram .cdot { fill: var(--fg); }
+.cdiagram .copen { fill: none; stroke: var(--fg); stroke-width: 1.1; }
+.cdiagram .cmark { fill: var(--muted); font-size: 8px; font-weight: 700; }
+.cdiagram .cfret { fill: var(--muted); font-size: 7.5px; }
+.cdiagram .cfinger { fill: var(--bg2); font-size: 7px; font-weight: 700; }
+
+.cpreamble { flex: none; padding: 8px 14px 0; }
+.cpreamblebody {
+  margin-top: 8px;
+  max-height: 26vh;
+  overflow-y: auto;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  color: var(--muted);
+  scrollbar-width: thin;
+}
+
+/* The paging mechanism: the flow runs off to the right inside a clipped
+   viewport, and a page turn translates it by exactly one viewport width.
+   column-fill: auto is what makes the columns fill top-to-bottom in order
+   instead of balancing, which is what lets the page count mean anything. */
+.chordviewport {
+  flex: 1;
+  overflow: hidden;
+  padding: 14px 16px 6px;
+  min-height: 0;
+}
+.chordflow {
+  height: 100%;
+  column-fill: auto;
+  font-family: var(--mono);
+  line-height: 1.32;
+  transition: transform 0.22s ease;
+}
+
+.cline { break-inside: avoid; margin-bottom: 2px; }
+/* The chords sit in their own relatively-positioned strip above the words, each
+   absolutely placed at its character column. */
+.cchords { position: relative; height: 1.3em; }
+.cchord,
+.cdeco {
+  position: absolute;
+  top: 0;
+  white-space: pre;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  font-weight: 700;
+  color: var(--acc);
+  background: none;
+  border: none;
+  padding: 0;
+}
+.cchord {
+  cursor: pointer;
+  padding: 3px 3px;
+  margin: -3px -3px;
+}
+.cchord:hover, .cchord:focus-visible { text-decoration: underline; outline: none; }
+.cdeco { color: var(--muted); font-weight: 500; }
+.clyric { white-space: pre; }
+
+.csection {
+  break-inside: avoid;
+  break-after: avoid;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--fg);
+  margin: 0.9em 0 0.25em;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--bd);
+}
+.chordflow > .csection:first-child { margin-top: 0; }
+/* An unchorded line INSIDE the song is a lyric, not a remark — the parser cannot tell them
+   apart and does not try, so position decides. In the preamble the same block really is the
+   tabber writing to you, and is muted below. */
+.ctext { white-space: pre-wrap; }
+.cpreamblebody .ctext { color: var(--muted); }
+.ctab {
+  break-inside: avoid;
+  margin: 0.3em 0;
+  font-family: var(--mono);
+  font-size: 0.94em;
+  line-height: 1.25;
+  white-space: pre;
+  color: var(--muted);
+  overflow: hidden;
+}
+.cgap { height: 0.85em; }
+
+/* View controls on the left, the pager on the right. Both are "how am I reading this",
+   which is why they share one bar rather than competing for the header. */
+.chordfoot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  padding: 7px 14px calc(7px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--bd);
+}
+.ctools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.cpager { display: flex; align-items: center; gap: 12px; }
+
+/* A segmented choice and a stepper, built to read as one control each. */
+.cseg, .cstep {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--bd);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--card);
+}
+.cseg button, .cstep button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.76rem;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.cseg button:hover:not(.on), .cstep button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg);
+}
+.cseg button.on { background: var(--acc-soft); color: var(--fg); font-weight: 600; }
+.cstep button:disabled { opacity: 0.35; cursor: default; }
+.cstep span, .cstep .lbl {
+  font-size: 0.76rem;
+  padding: 4px 8px;
+  min-width: 6.4rem;
+  text-align: center;
+  border-left: 1px solid var(--bd);
+  border-right: 1px solid var(--bd);
+  border-top: none;
+  border-bottom: none;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.cstep .lbl:hover { color: var(--fg); }
+
+.chordedit { flex: 1; display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; min-height: 0; }
+.chordbox {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 4;
+}
+.cdelete { align-self: flex-start; }
+
+/* The list of sheets on the profile page. */
+.sheetlist { display: flex; flex-direction: column; gap: 6px; }
+.sheetrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 11px;
+  background: var(--card);
+}
+.sheetrow .words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.sheetrow .words:hover .t { color: var(--acc); }
+.sheetrow .t { font-weight: 600; }
+.sheetrow .s { font-size: 0.8rem; }
+
+/* Voicings for the chord under the pointer.
+   pointer-events: none is load-bearing — see the note in chords.tsx. */
+.cpeek {
+  position: fixed;
+  z-index: 160;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--card) 97%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 9px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-width: min(370px, 92vw);
+}
+.cpeek .t { font-weight: 700; font-size: 0.95rem; }
+.cvrow { display: flex; flex-wrap: wrap; gap: 12px; }
+.cvitem { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+
+/* Diagrams and the tabber's notes, together, so they can leave together on a phone. */
+.chordtuck { flex: none; }
+
+/*
+ * The phone shape. Not a narrower desktop: one column that SCROLLS, the smallest type, tighter
+ * leading, and none of the controls — a thumb already knows how to scroll, and a pager plus
+ * three steppers would eat a quarter of the screen to offer choices there is no room to take.
+ * The breakpoint mirrors COMPACT_QUERY in web/src/chords.tsx; the two have to agree.
+ */
+@media (max-width: 820px) {
+  .chordviewport {
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    /* Bottom room so the last line clears the play bar rather than hiding behind it. */
+    padding: 10px 12px 40vh;
+  }
+  /* Height auto is what turns the multi-column flow back into one running column. */
+  .chordflow { height: auto; line-height: 1.18; }
+
+  /* Tighter everywhere: the point of the small type is more song per screen, and leading
+     undoes that faster than the type size does. */
+  .cline { margin-bottom: 0; }
+  .cchords { height: 1.15em; }
+  .cgap { height: 0.5em; }
+  .csection { margin: 0.75em 0 0.1em; }
+  .ctab { margin: 0.2em 0; }
+
+  .chordtuck {
+    overflow: hidden;
+    transition: max-height 0.24s ease, opacity 0.18s ease;
+    max-height: 40vh;
+  }
+  .chordtuck.tucked { max-height: 0; opacity: 0; }
+
+  .cstrip.top { padding: 6px 10px; }
+  .chordhead { padding: 7px 11px; gap: 8px; }
+}
+@media (max-width: 820px) and (prefers-reduced-motion: reduce) {
+  .chordtuck { transition: none; }
+}

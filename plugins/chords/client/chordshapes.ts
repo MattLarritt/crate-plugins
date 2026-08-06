@@ -1,0 +1,284 @@
+/**
+ * What a chord looks like under the fingers.
+ *
+ * An imported sheet arrives with Ultimate Guitar's own voicings, which are better than anything
+ * computed — they are what a person chose to play. But a sheet somebody typed themselves has
+ * nothing attached, and "Cadd9" with no diagram is exactly the moment a beginner gives up. So
+ * there are two sources, and they produce the same shape:
+ *
+ *   imported   UG's applicature, up to 27 voicings per chord, in THEIR string order.
+ *   derived    an open-position table for the chords people actually play, plus movable
+ *              E-shape and A-shape barres for the other eleven roots.
+ *
+ * Everything here is LOW E FIRST — the order a chord diagram is drawn in, left to right. UG's
+ * arrays run the other way, high E first, so they are reversed at the boundary. Getting that
+ * backwards produces a diagram that is plausible, playable, and the wrong chord.
+ *
+ * A chord this cannot work out gets NO diagram rather than a guess. Somebody trusting a wrong
+ * shape is worse off than somebody reading the chord name and working it out themselves.
+ */
+
+export interface Shape {
+  /** Fret per string, low E first. 0 is open, -1 is muted. */
+  frets: number[];
+  /** Finger per string, low E first. 0 means unspecified. */
+  fingers: number[];
+  /** How the voicing is described, for the tooltip: "open", "barre 3rd fret". */
+  label: string;
+}
+
+/** Semitone of each note name, C = 0. */
+const NOTE: Record<string, number> = {
+  C: 0,
+  'C#': 1,
+  Db: 1,
+  D: 2,
+  'D#': 3,
+  Eb: 3,
+  E: 4,
+  F: 5,
+  'F#': 6,
+  Gb: 6,
+  G: 7,
+  'G#': 8,
+  Ab: 8,
+  A: 9,
+  'A#': 10,
+  Bb: 10,
+  B: 11,
+};
+
+/** Open notes of the six strings, low E first. */
+const OPEN_STRINGS = [4, 9, 2, 7, 11, 4];
+
+export interface ParsedChord {
+  root: number;
+  /** Normalised quality key: '', 'm', '7', 'm7', 'maj7', 'sus4'… */
+  quality: string;
+  /** Slash bass, when written. Only used for labelling — the shape ignores it. */
+  bass: number | null;
+}
+
+/**
+ * Every spelling of a quality that means the same chord.
+ *
+ * An exact table, not prefix-stripping, and that is the point. Stripping a leading "maj" turned
+ * Cmaj9 into C9 — a major seventh silently replaced by a dominant one, which is a different
+ * chord and the sort of wrong answer somebody would trust. Here an unlisted quality falls
+ * through unchanged, matches nothing, and shows no diagram.
+ *
+ * Note 'M' and 'm' both appear: uppercase is major, lowercase is minor, and case-folding them
+ * together would be the same class of mistake.
+ */
+const ALIAS: Record<string, string> = {
+  '': '',
+  maj: '',
+  major: '',
+  M: '',
+  m: 'm',
+  min: 'm',
+  minor: 'm',
+  '-': 'm',
+  '7': '7',
+  dom7: '7',
+  m7: 'm7',
+  min7: 'm7',
+  '-7': 'm7',
+  maj7: 'maj7',
+  M7: 'maj7',
+  ma7: 'maj7',
+  'Δ': 'maj7',
+  'Δ7': 'maj7',
+  sus: 'sus4',
+  sus4: 'sus4',
+  sus2: 'sus2',
+  '6': '6',
+  maj6: '6',
+  M6: '6',
+  m6: 'm6',
+  min6: 'm6',
+  '9': '9',
+  dom9: '9',
+};
+
+/**
+ * Split a chord name into a root and a quality.
+ *
+ * The same chord is spelled several ways in the wild — "Cmin7", "Cm7" and "C-7" are one chord
+ * and have to key one table entry — so the quality goes through the alias table above.
+ */
+export function parseChordName(name: string): ParsedChord | null {
+  const m = /^([A-G](?:#|b)?)(.*)$/.exec(name.trim());
+  if (!m) return null;
+  const root = NOTE[m[1]!];
+  if (root === undefined) return null;
+
+  let rest = m[2] ?? '';
+  let bass: number | null = null;
+  const slash = rest.indexOf('/');
+  if (slash !== -1) {
+    const b = NOTE[rest.slice(slash + 1).trim()];
+    bass = b === undefined ? null : b;
+    rest = rest.slice(0, slash);
+  }
+
+  const written = rest.trim().replace(/°/, 'dim').replace(/^\+$/, 'aug');
+  // Exact, then a lowercase retry for MIN7 and friends. 'M' and 'm' are both listed exactly, so
+  // the retry can never turn a major into a minor.
+  const quality = ALIAS[written] ?? ALIAS[written.toLowerCase()] ?? written;
+  return { root, quality, bass };
+}
+
+/**
+ * Open-position voicings, written out.
+ *
+ * Hand-written rather than derived, and worth the lines: these are the shapes a guitarist
+ * actually forms, and a derived barre at the first fret for "C" would be technically correct and
+ * useless. Read as low E → high e; x is muted.
+ */
+const OPEN: Record<string, { frets: number[]; fingers?: number[] }> = {
+  C: { frets: [-1, 3, 2, 0, 1, 0], fingers: [0, 3, 2, 0, 1, 0] },
+  Cmaj7: { frets: [-1, 3, 2, 0, 0, 0], fingers: [0, 3, 2, 0, 0, 0] },
+  C7: { frets: [-1, 3, 2, 3, 1, 0], fingers: [0, 3, 2, 4, 1, 0] },
+  Cadd9: { frets: [-1, 3, 2, 0, 3, 0], fingers: [0, 2, 1, 0, 3, 0] },
+  D: { frets: [-1, -1, 0, 2, 3, 2], fingers: [0, 0, 0, 1, 3, 2] },
+  Dm: { frets: [-1, -1, 0, 2, 3, 1], fingers: [0, 0, 0, 2, 3, 1] },
+  D7: { frets: [-1, -1, 0, 2, 1, 2], fingers: [0, 0, 0, 3, 1, 2] },
+  Dmaj7: { frets: [-1, -1, 0, 2, 2, 2], fingers: [0, 0, 0, 1, 1, 1] },
+  Dm7: { frets: [-1, -1, 0, 2, 1, 1], fingers: [0, 0, 0, 2, 1, 1] },
+  Dsus2: { frets: [-1, -1, 0, 2, 3, 0], fingers: [0, 0, 0, 1, 3, 0] },
+  Dsus4: { frets: [-1, -1, 0, 2, 3, 3], fingers: [0, 0, 0, 1, 2, 3] },
+  E: { frets: [0, 2, 2, 1, 0, 0], fingers: [0, 2, 3, 1, 0, 0] },
+  Em: { frets: [0, 2, 2, 0, 0, 0], fingers: [0, 2, 3, 0, 0, 0] },
+  E7: { frets: [0, 2, 0, 1, 0, 0], fingers: [0, 2, 0, 1, 0, 0] },
+  Em7: { frets: [0, 2, 0, 0, 0, 0], fingers: [0, 2, 0, 0, 0, 0] },
+  Emaj7: { frets: [0, 2, 1, 1, 0, 0], fingers: [0, 3, 1, 2, 0, 0] },
+  Esus4: { frets: [0, 2, 2, 2, 0, 0], fingers: [0, 1, 2, 3, 0, 0] },
+  F: { frets: [1, 3, 3, 2, 1, 1], fingers: [1, 3, 4, 2, 1, 1] },
+  Fmaj7: { frets: [-1, -1, 3, 2, 1, 0], fingers: [0, 0, 3, 2, 1, 0] },
+  G: { frets: [3, 2, 0, 0, 0, 3], fingers: [2, 1, 0, 0, 0, 3] },
+  G7: { frets: [3, 2, 0, 0, 0, 1], fingers: [3, 2, 0, 0, 0, 1] },
+  Gmaj7: { frets: [3, 2, 0, 0, 0, 2], fingers: [3, 1, 0, 0, 0, 2] },
+  A: { frets: [-1, 0, 2, 2, 2, 0], fingers: [0, 0, 1, 2, 3, 0] },
+  Am: { frets: [-1, 0, 2, 2, 1, 0], fingers: [0, 0, 2, 3, 1, 0] },
+  A7: { frets: [-1, 0, 2, 0, 2, 0], fingers: [0, 0, 2, 0, 3, 0] },
+  Am7: { frets: [-1, 0, 2, 0, 1, 0], fingers: [0, 0, 2, 0, 1, 0] },
+  Amaj7: { frets: [-1, 0, 2, 1, 2, 0], fingers: [0, 0, 3, 1, 2, 0] },
+  Asus2: { frets: [-1, 0, 2, 2, 0, 0], fingers: [0, 0, 1, 2, 0, 0] },
+  Asus4: { frets: [-1, 0, 2, 2, 3, 0], fingers: [0, 0, 1, 2, 3, 0] },
+  B7: { frets: [-1, 2, 1, 2, 0, 2], fingers: [0, 2, 1, 3, 0, 4] },
+};
+
+/**
+ * Movable shapes, as offsets from the root fret.
+ *
+ * Two families: rooted on the sixth string (the E shapes) and on the fifth (the A shapes),
+ * which between them cover every root at some position on the neck. -1 is a string left out.
+ * Only qualities whose barre shape is unambiguous are here — a half-remembered m7b5 voicing
+ * would be a diagram that teaches somebody the wrong chord.
+ */
+const MOVABLE: Record<string, { e?: number[]; a?: number[] }> = {
+  '': { e: [0, 2, 2, 1, 0, 0], a: [-1, 0, 2, 2, 2, 0] },
+  m: { e: [0, 2, 2, 0, 0, 0], a: [-1, 0, 2, 2, 1, 0] },
+  '7': { e: [0, 2, 0, 1, 0, 0], a: [-1, 0, 2, 0, 2, 0] },
+  m7: { e: [0, 2, 0, 0, 0, 0], a: [-1, 0, 2, 0, 1, 0] },
+  maj7: { e: [0, 2, 1, 1, 0, 0], a: [-1, 0, 2, 1, 2, 0] },
+  sus4: { e: [0, 2, 2, 2, 0, 0], a: [-1, 0, 2, 2, 3, 0] },
+  sus2: { a: [-1, 0, 2, 2, 0, 0] },
+  '6': { a: [-1, 0, 2, 2, 2, 2] },
+  m6: { a: [-1, 0, 2, 2, 1, 2] },
+  '9': { a: [-1, 0, 2, 0, 2, 2] },
+};
+
+const ORD = ['', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th', '10th', '11th', '12th'];
+
+/** Shift a movable shape up the neck to put its root at `fret`. */
+function atFret(shape: number[], fret: number, family: 'E' | 'A'): Shape {
+  return {
+    frets: shape.map((f) => (f === -1 ? -1 : f + fret)),
+    // Fingering for a barre is the same everywhere, but only the barre finger is worth
+    // asserting; the rest depends on the hand.
+    fingers: shape.map(() => 0),
+    label: fret === 0 ? 'open' : `${family} shape, barre ${ORD[fret] ?? `fret ${fret}`} fret`,
+  };
+}
+
+/**
+ * Voicings for a chord name, best first.
+ *
+ * "Best" means what somebody would reach for: the open shape when there is one, then the
+ * lowest barre. Returns empty for anything unrecognised.
+ */
+const SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+export function shapesFor(name: string): Shape[] {
+  const out: Shape[] = [];
+  const parsedFirst = parseChordName(name);
+  // The literal spelling first, then the canonical one, so "CM7" finds the open Cmaj7 rather
+  // than settling for a barre.
+  const open =
+    OPEN[name.trim()] ??
+    (parsedFirst
+      ? (OPEN[SHARP[parsedFirst.root]! + parsedFirst.quality] ??
+        OPEN[FLAT[parsedFirst.root]! + parsedFirst.quality])
+      : undefined);
+  if (open) {
+    out.push({
+      frets: open.frets,
+      fingers: open.fingers ?? open.frets.map(() => 0),
+      label: open.frets.some((f) => f === 0) ? 'open' : 'first position',
+    });
+  }
+
+  const parsed = parsedFirst;
+  if (!parsed) return out;
+  const movable = MOVABLE[parsed.quality];
+  if (!movable) return out;
+
+  // Where the root sits on the sixth and fifth strings. 12 rather than 0 is deliberate for the
+  // A family: an "open" A shape only exists for A itself, and every other root needs a fret.
+  const eFret = (parsed.root - OPEN_STRINGS[0]! + 12) % 12;
+  const aFret = (parsed.root - OPEN_STRINGS[1]! + 12) % 12;
+  const cands: Shape[] = [];
+  if (movable.e) cands.push(atFret(movable.e, eFret, 'E'));
+  if (movable.a) cands.push(atFret(movable.a, aFret, 'A'));
+  cands.sort((x, y) => Math.max(...x.frets) - Math.max(...y.frets));
+
+  for (const c of cands) {
+    // Not a duplicate of the open voicing already listed.
+    if (out.some((o) => o.frets.join() === c.frets.join())) continue;
+    out.push(c);
+  }
+  return out;
+}
+
+/** UG's voicings, brought into this module's order and vocabulary. */
+export function fromUg(
+  variants: { frets: number[]; fingers: number[]; baseFret: number }[],
+  limit = 5,
+): Shape[] {
+  const out: Shape[] = [];
+  const seen = new Set<string>();
+  for (const v of variants) {
+    if (v.frets.length !== 6) continue;
+    // UG runs high e → low E. Reversing is the whole conversion; the fret numbers are already
+    // absolute, so baseFret is only their drawing hint and this module works its own out.
+    const frets = [...v.frets].reverse();
+    const key = frets.join();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const lowest = Math.min(...frets.filter((f) => f > 0));
+    out.push({
+      frets,
+      fingers: [...v.fingers].reverse(),
+      label: frets.some((f) => f === 0)
+        ? 'open'
+        : Number.isFinite(lowest) && lowest > 0
+          ? `${ORD[lowest] ?? `fret ${lowest}`} fret`
+          : '',
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
