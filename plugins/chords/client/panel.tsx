@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { chords, saveChords, deleteChords, type ChordSheetResponse, type ParsedSheet, type SheetBlock } from './api';
-import { fromUg, shapesFor, type Shape } from './chordshapes';
+import { fromUg, shapesFor, ukeShapesFor, type Shape } from './chordshapes';
 import { WORDMARK } from 'crate/logo';
 
 /**
@@ -73,16 +73,20 @@ const NORMAL_SIZE = 2;
 /** Where the chord diagrams sit, or whether they sit anywhere. */
 type StripWhere = 'top' | 'left' | 'off';
 
+/** Which instrument the diagrams describe. The sheet itself is instrument-agnostic. */
+type Instrument = 'guitar' | 'ukulele';
+
 interface ViewPrefs {
   /** Columns per page, or 0 for "work it out". */
   cols: number;
   /** Index into SIZE_STEPS. */
   size: number;
   strip: StripWhere;
+  instrument: Instrument;
 }
 
 const PREFS_KEY = 'crate.chords.view';
-const DEFAULT_PREFS: ViewPrefs = { cols: 0, size: NORMAL_SIZE, strip: 'top' };
+const DEFAULT_PREFS: ViewPrefs = { cols: 0, size: NORMAL_SIZE, strip: 'top', instrument: 'guitar' };
 
 function readPrefs(): ViewPrefs {
   try {
@@ -95,6 +99,7 @@ function readPrefs(): ViewPrefs {
       cols: Math.min(Math.max(Number(v.cols) || 0, 0), MAX_COLUMNS),
       size: Math.min(Math.max(Number(v.size) ?? NORMAL_SIZE, 0), SIZE_STEPS.length - 1),
       strip: v.strip === 'left' || v.strip === 'off' ? v.strip : 'top',
+      instrument: v.instrument === 'ukulele' ? 'ukulele' : 'guitar',
     };
   } catch {
     // Private browsing throws on access rather than returning null, and a view preference is
@@ -190,9 +195,11 @@ function Diagram({ shape, size = 50 }: { shape: Shape; size?: number }) {
   const padX = w * 0.14;
   const padTop = size * 0.3;
   const padBottom = size * 0.06;
+  // Four strings for a ukulele shape, six for guitar — the shape itself says which.
+  const strings = shape.frets.length;
   const gridW = w - padX * 2;
   const gridH = h - padTop - padBottom;
-  const stringGap = gridW / 5;
+  const stringGap = gridW / (strings - 1);
   const fretGap = gridH / FRETS;
 
   return (
@@ -215,7 +222,7 @@ function Diagram({ shape, size = 50 }: { shape: Shape; size?: number }) {
           className="fret"
         />
       ))}
-      {Array.from({ length: 6 }, (_, i) => (
+      {Array.from({ length: strings }, (_, i) => (
         <line
           key={`s${i}`}
           x1={padX + stringGap * i}
@@ -271,8 +278,15 @@ function Diagram({ shape, size = 50 }: { shape: Shape; size?: number }) {
 
 type UgShapes = Record<string, { frets: number[]; fingers: number[]; baseFret: number }[]>;
 
-/** Every voicing known for one chord: the import's, or this client's own derivation. */
-function voicings(name: string, imported: UgShapes): Shape[] {
+/**
+ * Every voicing known for one chord.
+ *
+ * Guitar prefers the import's shapes — the tabber chose them — and falls back to the derived
+ * chart. Ukulele always derives: an Ultimate Guitar applicature is six guitar strings, and
+ * there is nothing honest a four-string diagram can take from it.
+ */
+function voicings(name: string, imported: UgShapes, instrument: Instrument): Shape[] {
+  if (instrument === 'ukulele') return ukeShapesFor(name);
   const ug = imported[name];
   if (ug?.length) return fromUg(ug);
   return shapesFor(name);
@@ -661,14 +675,28 @@ export function ChordPanel({
   };
 
   const shapes: UgShapes = data === 'loading' ? {} : data.shapes;
-  const peekShapes = peek ? voicings(peek.name, shapes) : [];
+  const peekShapes = peek ? voicings(peek.name, shapes, prefs.instrument) : [];
 
   /** The diagram rail, in whichever direction it is running. */
   const strip = (where: 'top' | 'left') =>
     parsed && parsed.chords.length > 0 ? (
       <div className={`cstrip ${where}`}>
+        {/* Which instrument the diagrams describe. Lives IN the strip because that is what it
+            changes — and because on a phone the footer tools do not exist. */}
+        <div className="cinstr" role="group" aria-label="Diagram instrument">
+          {(['guitar', 'ukulele'] as const).map((inst) => (
+            <button
+              key={inst}
+              type="button"
+              className={prefs.instrument === inst ? 'on' : ''}
+              onClick={() => change({ instrument: inst })}
+            >
+              {inst === 'guitar' ? 'Guitar' : 'Uke'}
+            </button>
+          ))}
+        </div>
         {parsed.chords.map((name) => {
-          const v = voicings(name, shapes);
+          const v = voicings(name, shapes, prefs.instrument);
           return (
             <button
               key={name}
@@ -856,6 +884,14 @@ export function ChordPanel({
                   { v: 'off', label: 'Off', title: 'No chord shapes' },
                 ]}
                 onPick={(v) => change({ strip: v })}
+              />
+              <Segments<Instrument>
+                value={prefs.instrument}
+                options={[
+                  { v: 'guitar', label: 'Guitar', title: 'Guitar chord diagrams' },
+                  { v: 'ukulele', label: 'Ukulele', title: 'Ukulele chord diagrams (GCEA)' },
+                ]}
+                onPick={(v) => change({ instrument: v })}
               />
               <Stepper
                 label={SIZE_STEPS[prefs.size]?.label ?? 'Normal'}

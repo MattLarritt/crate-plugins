@@ -345,3 +345,39 @@
 @media (max-width: 820px) and (prefers-reduced-motion: reduce) {
   .chordtuck { transition: none; }
 }
+
+/* The instrument toggle at the strip's head: two stacked pills, compact enough for the
+   phone strip where the footer tools do not exist. */
+.cinstr {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding-right: 8px;
+  border-right: 1px solid var(--bd);
+  margin-right: 4px;
+}
+.cstrip.left .cinstr {
+  flex-direction: row;
+  padding: 0 0 8px;
+  border-right: none;
+  border-bottom: 1px solid var(--bd);
+  margin: 0 0 4px;
+}
+.cinstr button {
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.cinstr button.on {
+  color: var(--fg);
+  border-color: var(--acc);
+  background: var(--acc-soft);
+}

@@ -199,6 +199,68 @@ function fromUg(variants, limit = 5) {
   }
   return out;
 }
+var UKE_OPEN = [7, 0, 4, 9];
+var UKE_TONES = {
+  "": { tones: [0, 4, 7] },
+  m: { tones: [0, 3, 7] },
+  "7": { tones: [0, 4, 7, 10], omit: [7] },
+  m7: { tones: [0, 3, 7, 10], omit: [7] },
+  maj7: { tones: [0, 4, 7, 11], omit: [7] },
+  sus4: { tones: [0, 5, 7] },
+  sus2: { tones: [0, 2, 7] },
+  "6": { tones: [0, 4, 7, 9] },
+  m6: { tones: [0, 3, 7, 9] },
+  "9": { tones: [0, 2, 4, 7, 10], omit: [7] },
+  add9: { tones: [0, 2, 4, 7], omit: [7] },
+  dim: { tones: [0, 3, 6] },
+  dim7: { tones: [0, 3, 6, 9] },
+  aug: { tones: [0, 4, 8] }
+};
+function ukeShapesFor(name) {
+  const parsed = parseChordName(name);
+  if (!parsed) return [];
+  const spec = UKE_TONES[parsed.quality];
+  if (!spec) return [];
+  const tones = new Set(spec.tones.map((t) => (parsed.root + t) % 12));
+  const required = new Set(
+    spec.tones.filter((t) => !(spec.omit ?? []).includes(t)).map((t) => (parsed.root + t) % 12)
+  );
+  const found = /* @__PURE__ */ new Map();
+  for (let base = 0; base <= 9; base++) {
+    const options = UKE_OPEN.map(() => {
+      const o = [0];
+      for (let f = Math.max(base, 1); f <= base + 3; f++) o.push(f);
+      return o;
+    });
+    for (const f0 of options[0])
+      for (const f1 of options[1])
+        for (const f2 of options[2])
+          for (const f3 of options[3]) {
+            const frets = [f0, f1, f2, f3];
+            const notes = frets.map((f, i) => (UKE_OPEN[i] + f) % 12);
+            if (!notes.every((n) => tones.has(n))) continue;
+            if (![...required].every((r) => notes.includes(r))) continue;
+            const key = frets.join(",");
+            if (found.has(key)) continue;
+            const fretted = frets.filter((f) => f > 0);
+            const maxF = Math.max(0, ...fretted);
+            const span = fretted.length ? maxF - Math.min(...fretted) : 0;
+            const opens = frets.filter((f) => f === 0).length;
+            found.set(key, { frets, score: maxF * 10 + span * 3 - opens });
+          }
+    if (found.size >= 10) break;
+  }
+  return [...found.values()].sort((a, b) => a.score - b.score).slice(0, 4).map(({ frets }) => {
+    const maxF = Math.max(...frets);
+    return {
+      frets,
+      // Derived shapes carry no fingering: a wrong finger number teaches a wrong habit,
+      // and the Diagram simply draws unnumbered dots for zeros.
+      fingers: [0, 0, 0, 0],
+      label: maxF <= 3 ? "open" : `${ORD[Math.min(...frets.filter((f) => f > 0))] ?? "up the neck"} fret`
+    };
+  });
+}
 
 // shims/crate-logo.js
 var { WORDMARK } = window.crateHost.logo;
@@ -228,7 +290,7 @@ var SIZE_STEPS = [
 ];
 var NORMAL_SIZE = 2;
 var PREFS_KEY = "crate.chords.view";
-var DEFAULT_PREFS = { cols: 0, size: NORMAL_SIZE, strip: "top" };
+var DEFAULT_PREFS = { cols: 0, size: NORMAL_SIZE, strip: "top", instrument: "guitar" };
 function readPrefs() {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -239,7 +301,8 @@ function readPrefs() {
       // hand, must not be able to produce a layout with zero or ninety columns.
       cols: Math.min(Math.max(Number(v.cols) || 0, 0), MAX_COLUMNS),
       size: Math.min(Math.max(Number(v.size) ?? NORMAL_SIZE, 0), SIZE_STEPS.length - 1),
-      strip: v.strip === "left" || v.strip === "off" ? v.strip : "top"
+      strip: v.strip === "left" || v.strip === "off" ? v.strip : "top",
+      instrument: v.instrument === "ukulele" ? "ukulele" : "guitar"
     };
   } catch {
     return DEFAULT_PREFS;
@@ -301,9 +364,10 @@ function Diagram({ shape, size = 50 }) {
   const padX = w * 0.14;
   const padTop = size * 0.3;
   const padBottom = size * 0.06;
+  const strings = shape.frets.length;
   const gridW = w - padX * 2;
   const gridH = h - padTop - padBottom;
-  const stringGap = gridW / 5;
+  const stringGap = gridW / (strings - 1);
   const fretGap = gridH / FRETS;
   return /* @__PURE__ */ jsxs("svg", { className: "cdiagram", viewBox: `0 0 ${w} ${h}`, width: w, height: h, "aria-hidden": true, children: [
     /* @__PURE__ */ jsx(
@@ -327,7 +391,7 @@ function Diagram({ shape, size = 50 }) {
       },
       `f${i}`
     )),
-    Array.from({ length: 6 }, (_, i) => /* @__PURE__ */ jsx(
+    Array.from({ length: strings }, (_, i) => /* @__PURE__ */ jsx(
       "line",
       {
         x1: padX + stringGap * i,
@@ -366,7 +430,8 @@ function Diagram({ shape, size = 50 }) {
     })
   ] });
 }
-function voicings(name, imported) {
+function voicings(name, imported, instrument) {
+  if (instrument === "ukulele") return ukeShapesFor(name);
   const ug = imported[name];
   if (ug?.length) return fromUg(ug);
   return shapesFor(name);
@@ -601,27 +666,39 @@ function ChordPanel({
     }
   };
   const shapes = data === "loading" ? {} : data.shapes;
-  const peekShapes = peek ? voicings(peek.name, shapes) : [];
-  const strip = (where) => parsed && parsed.chords.length > 0 ? /* @__PURE__ */ jsx("div", { className: `cstrip ${where}`, children: parsed.chords.map((name) => {
-    const v = voicings(name, shapes);
-    return /* @__PURE__ */ jsxs(
+  const peekShapes = peek ? voicings(peek.name, shapes, prefs.instrument) : [];
+  const strip = (where) => parsed && parsed.chords.length > 0 ? /* @__PURE__ */ jsxs("div", { className: `cstrip ${where}`, children: [
+    /* @__PURE__ */ jsx("div", { className: "cinstr", role: "group", "aria-label": "Diagram instrument", children: ["guitar", "ukulele"].map((inst) => /* @__PURE__ */ jsx(
       "button",
       {
         type: "button",
-        className: "cstripitem",
-        title: v.length > 1 ? `${v.length} voicings` : v[0]?.label,
-        onMouseEnter: (e) => setPeek(peekAt(name, e.currentTarget)),
-        onMouseLeave: () => setPeek(null),
-        onFocus: (e) => setPeek(peekAt(name, e.currentTarget)),
-        onBlur: () => setPeek(null),
-        children: [
-          /* @__PURE__ */ jsx("span", { className: "n", children: name }),
-          v[0] ? /* @__PURE__ */ jsx(Diagram, { shape: v[0] }) : /* @__PURE__ */ jsx("span", { className: "cnodiagram", children: "?" })
-        ]
+        className: prefs.instrument === inst ? "on" : "",
+        onClick: () => change({ instrument: inst }),
+        children: inst === "guitar" ? "Guitar" : "Uke"
       },
-      name
-    );
-  }) }) : null;
+      inst
+    )) }),
+    parsed.chords.map((name) => {
+      const v = voicings(name, shapes, prefs.instrument);
+      return /* @__PURE__ */ jsxs(
+        "button",
+        {
+          type: "button",
+          className: "cstripitem",
+          title: v.length > 1 ? `${v.length} voicings` : v[0]?.label,
+          onMouseEnter: (e) => setPeek(peekAt(name, e.currentTarget)),
+          onMouseLeave: () => setPeek(null),
+          onFocus: (e) => setPeek(peekAt(name, e.currentTarget)),
+          onBlur: () => setPeek(null),
+          children: [
+            /* @__PURE__ */ jsx("span", { className: "n", children: name }),
+            v[0] ? /* @__PURE__ */ jsx(Diagram, { shape: v[0] }) : /* @__PURE__ */ jsx("span", { className: "cnodiagram", children: "?" })
+          ]
+        },
+        name
+      );
+    })
+  ] }) : null;
   return /* @__PURE__ */ jsxs("div", { className: "chordpanel", children: [
     /* @__PURE__ */ jsxs("div", { className: "chordhead", children: [
       /* @__PURE__ */ jsx("svg", { className: "chordlogo", viewBox: `0 0 ${WORDMARK.w} ${WORDMARK.h}`, role: "img", "aria-label": "Crate", children: /* @__PURE__ */ jsx("path", { fill: "currentColor", fillRule: "evenodd", d: WORDMARK.d }) }),
@@ -758,6 +835,17 @@ function ChordPanel({
                 { v: "off", label: "Off", title: "No chord shapes" }
               ],
               onPick: (v) => change({ strip: v })
+            }
+          ),
+          /* @__PURE__ */ jsx(
+            Segments,
+            {
+              value: prefs.instrument,
+              options: [
+                { v: "guitar", label: "Guitar", title: "Guitar chord diagrams" },
+                { v: "ukulele", label: "Ukulele", title: "Ukulele chord diagrams (GCEA)" }
+              ],
+              onPick: (v) => change({ instrument: v })
             }
           ),
           /* @__PURE__ */ jsx(

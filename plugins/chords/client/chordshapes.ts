@@ -282,3 +282,105 @@ export function fromUg(
   }
   return out;
 }
+
+// ---- ukulele ---------------------------------------------------------------
+
+/**
+ * Ukulele voicings, DERIVED rather than tabled.
+ *
+ * The guitar half of this module is a hand-written chart, because guitar voicings are
+ * conventions — the "right" F is a cultural fact a search cannot know. Ukulele is a different
+ * instrument in a useful way: four strings, chords lie within a few frets of the nut, and the
+ * standard shapes ARE the mathematically compact ones — so a small search over GCEA finds the
+ * textbook chart (C = 0003, G = 0232, Am = 2000…) instead of hard-coding it, and every root and
+ * quality falls out for free, including ones the guitar chart refuses (dim, aug, add9).
+ *
+ * The same honesty rule holds: a quality this cannot spell gets NO diagram. And the derivation
+ * is testable — decode a voicing's notes and they must be exactly the chord's tones.
+ */
+
+/** Open strings, low to high as drawn: G C E A. (Re-entrant tuning; pitch class is what matters.) */
+const UKE_OPEN = [7, 0, 4, 9];
+
+/**
+ * Chord tones by quality, as semitone offsets from the root.
+ *
+ * `omit` lists tones a four-string instrument may drop — always the fifth, never the third or
+ * the tone that names the chord. A 9th chord on four strings is root-3rd-7th-9th, exactly as a
+ * uke chart writes it.
+ */
+const UKE_TONES: Record<string, { tones: number[]; omit?: number[] }> = {
+  '': { tones: [0, 4, 7] },
+  m: { tones: [0, 3, 7] },
+  '7': { tones: [0, 4, 7, 10], omit: [7] },
+  m7: { tones: [0, 3, 7, 10], omit: [7] },
+  maj7: { tones: [0, 4, 7, 11], omit: [7] },
+  sus4: { tones: [0, 5, 7] },
+  sus2: { tones: [0, 2, 7] },
+  '6': { tones: [0, 4, 7, 9] },
+  m6: { tones: [0, 3, 7, 9] },
+  '9': { tones: [0, 2, 4, 7, 10], omit: [7] },
+  add9: { tones: [0, 2, 4, 7], omit: [7] },
+  dim: { tones: [0, 3, 6] },
+  dim7: { tones: [0, 3, 6, 9] },
+  aug: { tones: [0, 4, 8] },
+};
+
+export function ukeShapesFor(name: string): Shape[] {
+  const parsed = parseChordName(name);
+  if (!parsed) return [];
+  const spec = UKE_TONES[parsed.quality];
+  if (!spec) return [];
+
+  const tones = new Set(spec.tones.map((t) => (parsed.root + t) % 12));
+  const required = new Set(
+    spec.tones.filter((t) => !(spec.omit ?? []).includes(t)).map((t) => (parsed.root + t) % 12),
+  );
+
+  /*
+   * Search windows walking up the neck: in each, a string plays open or within [base, base+3]
+   * — a hand's reach. All four strings sound (uke chords do not mute), every note must be a
+   * chord tone, and every required tone must be present. Scoring prefers low, open and compact,
+   * which is exactly what makes the nut-position search reproduce the standard chart.
+   */
+  const found = new Map<string, { frets: number[]; score: number }>();
+  for (let base = 0; base <= 9; base++) {
+    const options: number[][] = UKE_OPEN.map(() => {
+      const o = [0];
+      for (let f = Math.max(base, 1); f <= base + 3; f++) o.push(f);
+      return o;
+    });
+    for (const f0 of options[0]!)
+      for (const f1 of options[1]!)
+        for (const f2 of options[2]!)
+          for (const f3 of options[3]!) {
+            const frets = [f0, f1, f2, f3];
+            const notes = frets.map((f, i) => (UKE_OPEN[i]! + f) % 12);
+            if (!notes.every((n) => tones.has(n))) continue;
+            if (![...required].every((r) => notes.includes(r))) continue;
+            const key = frets.join(',');
+            if (found.has(key)) continue;
+            const fretted = frets.filter((f) => f > 0);
+            const maxF = Math.max(0, ...fretted);
+            const span = fretted.length ? maxF - Math.min(...fretted) : 0;
+            const opens = frets.filter((f) => f === 0).length;
+            found.set(key, { frets, score: maxF * 10 + span * 3 - opens });
+          }
+    // Enough voicings for a picker; walking further up adds ever-worse duplicates.
+    if (found.size >= 10) break;
+  }
+
+  return [...found.values()]
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 4)
+    .map(({ frets }) => {
+      const maxF = Math.max(...frets);
+      return {
+        frets,
+        // Derived shapes carry no fingering: a wrong finger number teaches a wrong habit,
+        // and the Diagram simply draws unnumbered dots for zeros.
+        fingers: [0, 0, 0, 0],
+        label: maxF <= 3 ? 'open' : `${ORD[Math.min(...frets.filter((f) => f > 0))] ?? 'up the neck'} fret`,
+      };
+    });
+}
