@@ -28,11 +28,17 @@ declare module 'crate/player' {
     current: PlayableTrack | null;
     index: number;
     playing: boolean;
+    /** Queue label — how a service recognises its own session versus somebody's album. */
+    source: string;
     play(tracks: PlayableTrack[], startAt?: number, source?: string): void;
     toggle(): void;
     next(userInitiated?: boolean): void;
     prev(): void;
     seek(seconds: number): void;
+    /** Append to the queue. */
+    enqueue(tracks: PlayableTrack[]): void;
+    /** Swap everything AFTER the playing track, without touching what is playing. */
+    replaceUpcoming(tracks: PlayableTrack[]): void;
   }
   export function usePlayer(): PlayerApi;
 }

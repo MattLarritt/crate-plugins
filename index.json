@@ -6,6 +6,13 @@
       "version": "1.1.0",
       "description": "Type or import guitar chords with lyrics for the playing song — Ultimate Guitar links paste straight in. Chord diagrams for guitar or ukulele. Private per user.",
       "dir": "plugins/chords/dist"
+    },
+    {
+      "id": "intelligent-shuffle",
+      "name": "Intelligent Shuffle",
+      "version": "1.0.0",
+      "description": "A dynamic DJ for your library: vote more or less like this while it plays, and the queue re-deals to the mood. Votes fade over hours, so it follows tonight, not last week.",
+      "dir": "plugins/intelligent-shuffle/dist"
     }
   ]
 }

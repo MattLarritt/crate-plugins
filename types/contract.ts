@@ -67,4 +67,10 @@ export interface UiPlugin {
   id: string;
   playbar?: { title: string; icon: ComponentType; Panel: ComponentType<PanelProps> };
   profile?: { label: string; hint: string; Pane: ComponentType<{ say: Say }> };
+  /**
+   * Always mounted while somebody is signed in, rendering nothing visible: the plugin's
+   * running half. Lives inside PlayerProvider (usePlayer works) and unmounts when the plugin
+   * is switched off. Requires crate >= the Service-slot build (2026-08-07).
+   */
+  Service?: ComponentType;
 }

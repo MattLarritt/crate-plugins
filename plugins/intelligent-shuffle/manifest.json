@@ -1,0 +1,9 @@
+{
+  "id": "intelligent-shuffle",
+  "name": "Intelligent Shuffle",
+  "version": "1.0.0",
+  "description": "A dynamic DJ for your library: vote more or less like this while it plays, and the queue re-deals to the mood. Votes fade over hours, so it follows tonight, not last week.",
+  "server": "server.js",
+  "client": "client.js",
+  "css": "style.css"
+}
