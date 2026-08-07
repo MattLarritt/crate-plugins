@@ -40,7 +40,8 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
         ...(p.current ? [p.current.trackId] : []),
         ...(keep ? [keep.trackId] : []),
       ];
-      const r = await plan(TAIL, exclude);
+      const after = keep?.trackId ?? p.current?.trackId;
+      const r = await plan(TAIL, exclude, after);
       p.replaceUpcoming(keep ? [keep, ...r.tracks] : r.tracks);
     },
     [p],
@@ -65,7 +66,7 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
     void (async () => {
       if (seed && p.current) await vote(p.current.trackId, 'more').then((r) => setMood(r.mood));
       const exclude = p.current ? [p.current.trackId] : [];
-      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude);
+      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude, p.current?.trackId);
       if (!r.tracks.length) {
         say('bad', 'nothing to play — is your library empty?');
         return;

@@ -21,8 +21,9 @@ export interface Mood {
   outOf: MoodEntry[];
 }
 
-export const plan = (count: number, exclude: number[]) =>
-  post<{ tracks: PlannedTrack[] }>('/api/ishuffle/plan', { count, exclude });
+/** afterTrackId = the track this batch will play after, so no artist repeats across the seam. */
+export const plan = (count: number, exclude: number[], afterTrackId?: number) =>
+  post<{ tracks: PlannedTrack[] }>('/api/ishuffle/plan', { count, exclude, afterTrackId });
 
 export const vote = (trackId: number, direction: 'more' | 'less') =>
   post<{ ok: true; applied: { artist: string; album: string; genres: string[] }; mood: Mood }>(

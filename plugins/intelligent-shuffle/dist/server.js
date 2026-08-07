@@ -2,8 +2,8 @@
 var HALF_LIFE_S = 4 * 3600;
 var FLOOR = 0.05;
 var DELTAS = {
-  more: { track: 3, album: 2, artist: 2, genre: 1 },
-  less: { track: -4, album: -2.5, artist: -2.5, genre: -1.5 }
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5 }
 };
 var HARD_NO = -3;
 var TEMPERATURE = 1.5;
@@ -81,6 +81,8 @@ var plugin = {
       const b = req.body ?? {};
       const count = Math.min(Math.max(Number(b.count) || 6, 1), 30);
       const exclude = new Set(Array.isArray(b.exclude) ? b.exclude.map(Number) : []);
+      const afterId = Number(b.afterTrackId) || 0;
+      const afterArtist = afterId ? db.prepare("SELECT norm_artist FROM tracks WHERE id = ?").get(afterId)?.norm_artist ?? "" : "";
       const lib = library(c.id);
       const w = weights(c.id);
       const genres = genresOf([...new Set(lib.map((t) => t.norm_artist))]);
@@ -117,8 +119,19 @@ var plugin = {
         perArtist.set(chosen.t.norm_artist, artistCount + 1);
         picked.push(chosen.t);
       }
+      const ordered = [];
+      let lastArtist = afterArtist;
+      const unplaced = [...picked];
+      while (unplaced.length) {
+        let at = unplaced.findIndex((t2) => t2.norm_artist !== lastArtist);
+        if (at === -1) at = 0;
+        const [t] = unplaced.splice(at, 1);
+        if (!t) break;
+        ordered.push(t);
+        lastArtist = t.norm_artist;
+      }
       return {
-        tracks: picked.map((t) => ({
+        tracks: ordered.map((t) => ({
           trackId: t.id,
           title: t.title,
           artistName: t.artist_name,

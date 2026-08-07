@@ -38,7 +38,10 @@ export function IntelligentShuffleService() {
     if (!isActive() || remaining >= 3 || fetching.current) return;
     fetching.current = true;
     const queued = p.queue.map((t) => t.trackId);
-    void plan(5, [...playedIds(), ...queued])
+    // The new batch plays after whatever is currently last, so tell the planner — the
+    // no-same-artist-twice rule has to hold across that seam too.
+    const lastQueued = p.queue[p.queue.length - 1]?.trackId;
+    void plan(5, [...playedIds(), ...queued], lastQueued)
       .then((r) => {
         if (isActive() && r.tracks.length) p.enqueue(r.tracks);
       })

@@ -24,10 +24,22 @@ const HALF_LIFE_S = 4 * 3600;
 /** Below this a weight is noise; pruned on the next vote so the table stays mood-sized. */
 const FLOOR = 0.05;
 
-/** What one vote is worth, per key it touches. Vetoes bite harder than praise. */
+/**
+ * What one vote is worth, per key it touches. Two rules shape these numbers:
+ *
+ * GENRE IS THE BIGGEST MOVER, both ways. "More like this" means more music LIKE this — the
+ * vibe — not more of the same band; an early version weighted artist above genre and dutifully
+ * answered a System of a Down vote with more System of a Down, which is a jukebox stuck on
+ * repeat, not a DJ. The artist and album still get a nudge (you did like that song, and the
+ * per-batch cap plus the no-adjacent rule keep even a liked artist from crowding the queue),
+ * but the mood generalises.
+ *
+ * Vetoes bite harder than praise, and the track delta is the exception to the genre rule:
+ * a specific song is the one thing a vote names exactly.
+ */
 const DELTAS = {
-  more: { track: 3, album: 2, artist: 2, genre: 1 },
-  less: { track: -4, album: -2.5, artist: -2.5, genre: -1.5 },
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5 },
 } as const;
 
 /** A summed score below this means "the mood says no": excluded outright, not just unlikely. */
@@ -152,9 +164,17 @@ const plugin: CratePlugin = {
       const c = need(req, reply);
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
-      const b = (req.body ?? {}) as { count?: unknown; exclude?: unknown };
+      const b = (req.body ?? {}) as { count?: unknown; exclude?: unknown; afterTrackId?: unknown };
       const count = Math.min(Math.max(Number(b.count) || 6, 1), 30);
       const exclude = new Set(Array.isArray(b.exclude) ? b.exclude.map(Number) : []);
+      // The track this batch will play AFTER, so the no-adjacent rule holds across the seam
+      // between what is already queued and what is being planned now.
+      const afterId = Number(b.afterTrackId) || 0;
+      const afterArtist = afterId
+        ? ((db.prepare('SELECT norm_artist FROM tracks WHERE id = ?').get(afterId) as
+            | { norm_artist: string }
+            | undefined)?.norm_artist ?? '')
+        : '';
 
       const lib = library(c.id);
       const w = weights(c.id);
@@ -211,8 +231,26 @@ const plugin: CratePlugin = {
         picked.push(chosen.t);
       }
 
+      /*
+       * No artist twice in a row, IF POSSIBLE. The sampled order is kept as priority and the
+       * first pick that breaks an adjacency is pulled forward; when every remaining pick is
+       * the same artist there is nothing to pull, and playing them beats silence — "if
+       * possible" is the honest rule for a four-track library night.
+       */
+      const ordered: LibRow[] = [];
+      let lastArtist = afterArtist;
+      const unplaced = [...picked];
+      while (unplaced.length) {
+        let at = unplaced.findIndex((t) => t.norm_artist !== lastArtist);
+        if (at === -1) at = 0;
+        const [t] = unplaced.splice(at, 1);
+        if (!t) break;
+        ordered.push(t);
+        lastArtist = t.norm_artist;
+      }
+
       return {
-        tracks: picked.map((t) => ({
+        tracks: ordered.map((t) => ({
           trackId: t.id,
           title: t.title,
           artistName: t.artist_name,
