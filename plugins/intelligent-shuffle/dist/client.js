@@ -95,26 +95,18 @@ function IntelligentShufflePanel({ onClose, say }) {
     void moodNow().then((r) => setMood(r.mood)).catch(() => setMood(null));
   }, []);
   const next = p.queue[p.index + 1] ?? null;
-  const redeal = useCallback(
-    async (keep) => {
-      const exclude = [
-        ...playedIds(),
-        ...p.current ? [p.current.trackId] : [],
-        ...keep ? [keep.trackId] : []
-      ];
-      const after = keep?.trackId ?? p.current?.trackId;
-      const r = await plan(TAIL, exclude, after);
-      p.replaceUpcoming(keep ? [keep, ...r.tracks] : r.tracks);
-    },
-    [p]
-  );
-  const voteOn = (trackId, direction, keepNext) => {
+  const redeal = useCallback(async () => {
+    const exclude = [...playedIds(), ...p.current ? [p.current.trackId] : []];
+    const r = await plan(TAIL, exclude, p.current?.trackId);
+    p.replaceUpcoming(r.tracks);
+  }, [p]);
+  const voteOn = (trackId, direction) => {
     setBusy(true);
     void vote(trackId, direction).then(async (r) => {
       setMood(r.mood);
       const what = [r.applied.artist, ...r.applied.genres.slice(0, 2)].join(", ");
       say("good", direction === "more" ? `More like: ${what}` : `Less like: ${what}`);
-      await redeal(keepNext && next ? next : null);
+      if (direction === "less") await redeal();
     }).catch((e) => say("bad", e.message)).finally(() => setBusy(false));
   };
   const start = (seed) => {
@@ -147,12 +139,12 @@ function IntelligentShufflePanel({ onClose, say }) {
     ] }),
     !active2 && /* @__PURE__ */ jsxs("div", { className: "isstart", children: [
       /* @__PURE__ */ jsxs("p", { children: [
-        "Press play and vote. ",
-        /* @__PURE__ */ jsx("strong", { children: "More like this" }),
-        " and",
+        "Two buttons, that\u2019s the whole thing: ",
+        /* @__PURE__ */ jsx("strong", { children: "more like this" }),
+        " or",
         " ",
         /* @__PURE__ */ jsx("strong", { children: "less like this" }),
-        " nudge the artist, the album and the genres of what is playing \u2014 and the queue re-deals itself around your votes. The effect fades over a few hours, so it follows tonight\u2019s mood, not last week\u2019s."
+        " on whatever is playing. Yes leans the coming songs toward this vibe; no steers away and re-deals the queue. Votes fade over a few hours, so it follows tonight\u2019s mood, not last week\u2019s."
       ] }),
       /* @__PURE__ */ jsxs("div", { className: "isstartrow", children: [
         p.current && /* @__PURE__ */ jsx("button", { className: "btn", disabled: busy, onClick: () => start(true), children: "Start from this song" }),
@@ -160,64 +152,47 @@ function IntelligentShufflePanel({ onClose, say }) {
       ] })
     ] }),
     active2 && /* @__PURE__ */ jsxs("div", { className: "isbody", children: [
-      p.current && /* @__PURE__ */ jsxs("div", { className: "iscard now", children: [
+      p.current && /* @__PURE__ */ jsxs("div", { className: "isnow", children: [
         /* @__PURE__ */ jsx("div", { className: "k muted", children: "Now playing" }),
         /* @__PURE__ */ jsx("div", { className: "t", children: p.current.title }),
         /* @__PURE__ */ jsxs("div", { className: "s muted", children: [
           p.current.artistName,
           p.current.albumTitle ? ` \xB7 ${p.current.albumTitle}` : ""
         ] }),
-        /* @__PURE__ */ jsxs("div", { className: "isvotes", children: [
-          /* @__PURE__ */ jsx(
+        /* @__PURE__ */ jsxs("div", { className: "isbig", children: [
+          /* @__PURE__ */ jsxs(
             "button",
             {
-              className: "btn isvote more",
+              className: "isyes",
               disabled: busy,
               onClick: () => voteOn(p.current.trackId, "more"),
-              children: "More like this"
+              children: [
+                /* @__PURE__ */ jsx("span", { className: "mark", children: "\u2191" }),
+                "More like this"
+              ]
             }
           ),
-          /* @__PURE__ */ jsx(
+          /* @__PURE__ */ jsxs(
             "button",
             {
-              className: "btn sec isvote less",
+              className: "isno",
               disabled: busy,
               onClick: () => voteOn(p.current.trackId, "less"),
-              children: "Less like this"
+              children: [
+                /* @__PURE__ */ jsx("span", { className: "mark", children: "\u2193" }),
+                "Less like this"
+              ]
             }
           )
         ] })
       ] }),
-      /* @__PURE__ */ jsxs("div", { className: "iscard next", children: [
-        /* @__PURE__ */ jsx("div", { className: "k muted", children: "Up next" }),
-        next ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-          /* @__PURE__ */ jsx("div", { className: "t", children: next.title }),
-          /* @__PURE__ */ jsxs("div", { className: "s muted", children: [
-            next.artistName,
-            next.albumTitle ? ` \xB7 ${next.albumTitle}` : ""
-          ] }),
-          /* @__PURE__ */ jsxs("div", { className: "isvotes", children: [
-            /* @__PURE__ */ jsx(
-              "button",
-              {
-                className: "btn sec isvote more",
-                disabled: busy,
-                onClick: () => voteOn(next.trackId, "more", true),
-                children: "Good pick"
-              }
-            ),
-            /* @__PURE__ */ jsx(
-              "button",
-              {
-                className: "btn sec isvote less",
-                disabled: busy,
-                onClick: () => voteOn(next.trackId, "less"),
-                children: "Not this one"
-              }
-            )
-          ] })
-        ] }) : /* @__PURE__ */ jsx("div", { className: "s muted", children: "finding something\u2026" })
-      ] }),
+      /* @__PURE__ */ jsx("div", { className: "isnext muted", children: next ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+        /* @__PURE__ */ jsx("span", { className: "k", children: "Up next" }),
+        " ",
+        next.title,
+        " \u2014 ",
+        next.artistName
+      ] }) : /* @__PURE__ */ jsx("span", { className: "k", children: "finding what's next\u2026" }) }),
       mood && (mood.into.length > 0 || mood.outOf.length > 0) && /* @__PURE__ */ jsxs("div", { className: "ismood", children: [
         mood.into.length > 0 && /* @__PURE__ */ jsxs("div", { className: "isrow", children: [
           /* @__PURE__ */ jsx("span", { className: "k muted", children: "Leaning into" }),

@@ -53,21 +53,55 @@
 
 .isbody { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px 18px; }
 
-.iscard {
-  border: 1px solid var(--bd);
+/* Now playing: the song large, then the whole control surface — two thumb-sized buttons.
+   Sized for a glance and a jab (the car-stereo test), not for reading. */
+.isnow {
+  border: 1px solid color-mix(in srgb, var(--acc) 45%, transparent);
   border-radius: 13px;
   background: var(--card);
-  padding: 12px 14px;
+  padding: 14px 16px;
+  text-align: center;
 }
-.iscard .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
-.iscard .t { font-weight: 700; font-size: 1.05rem; margin-top: 3px; }
-.iscard .s { font-size: 0.85rem; }
-.iscard.now { border-color: color-mix(in srgb, var(--acc) 45%, transparent); }
+.isnow .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.isnow .t { font-weight: 800; font-size: 1.25rem; margin-top: 4px; }
+.isnow .s { font-size: 0.9rem; }
 
-.isvotes { display: flex; gap: 8px; margin-top: 11px; flex-wrap: wrap; }
-.isvote { flex: 1; min-width: 120px; }
-.isvote.more { border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
-.isvote.less { border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+.isbig { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.isbig button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 76px;
+  font: inherit;
+  font-weight: 700;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+.isbig button:active { transform: scale(0.97); }
+.isbig button:disabled { opacity: 0.55; }
+.isbig .mark { font-size: 1.5rem; line-height: 1; }
+.isyes {
+  color: var(--ok);
+  border: 1.5px solid color-mix(in srgb, var(--ok) 55%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.isno {
+  color: var(--err);
+  border: 1.5px solid color-mix(in srgb, var(--err) 50%, transparent);
+  background: color-mix(in srgb, var(--err) 9%, transparent);
+}
+
+/* Next is information, not a control: one quiet line. */
+.isnext { font-size: 0.88rem; padding: 2px 4px; }
+.isnext .k {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 6px;
+}
 
 .ismood { display: flex; flex-direction: column; gap: 8px; padding: 2px 2px 0; }
 .isrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

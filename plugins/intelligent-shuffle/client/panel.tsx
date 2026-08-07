@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { usePlayer } from 'crate/player';
 import type { PanelProps } from '../../../types/contract';
-import { moodNow, plan, resetMood, vote, type Mood, type PlannedTrack } from './api';
+import { moodNow, plan, resetMood, vote, type Mood } from './api';
 import { getVersion, isActive, playedIds, startSession, stopSession, subscribe } from './session';
 
 /**
- * The DJ window: what is playing, what is next, and the two buttons that steer everything.
+ * The DJ window: what is playing, two big buttons, and a read-only glimpse of what is next.
  *
- * The design rule is that every vote reshapes the FUTURE and never interrupts the present —
- * "less like this" does not skip the song (the skip button is right there if you mean that),
- * it re-deals everything after it. The one exception is vetoing the NEXT track, whose whole
- * point is that it never reaches the speakers.
+ * Built for the car-stereo test: YES and NO on the playing song, nothing else to learn. The
+ * first version also offered votes on the next track and re-dealt the queue on EVERY vote —
+ * three controls all mutating the same queue, so "next" changed under you and a skip landed
+ * somewhere you had never been shown. It felt random because it was. The rules now:
+ *
+ *   YES  — the mood is noted; the QUEUE DOES NOT MOVE. A skip goes exactly where "up next"
+ *          says. New enthusiasm reaches the speakers through the next top-up, a few tracks
+ *          out, which is how a human DJ works a request in too.
+ *   NO   — the mood is noted and the unplayed tail re-deals ONCE, visibly. You said "not this
+ *          vibe"; the queue changing is the expected answer, and it happens while you watch.
  */
 
 const SOURCE = 'Intelligent Shuffle';
@@ -32,30 +38,22 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
 
   const next = p.queue[p.index + 1] ?? null;
 
-  /** A fresh tail against the mood as it stands, keeping `keep` (a just-approved next) first. */
-  const redeal = useCallback(
-    async (keep?: PlannedTrack | null) => {
-      const exclude = [
-        ...playedIds(),
-        ...(p.current ? [p.current.trackId] : []),
-        ...(keep ? [keep.trackId] : []),
-      ];
-      const after = keep?.trackId ?? p.current?.trackId;
-      const r = await plan(TAIL, exclude, after);
-      p.replaceUpcoming(keep ? [keep, ...r.tracks] : r.tracks);
-    },
-    [p],
-  );
+  /** A fresh tail against the mood as it stands. Only a NO triggers this — see voteOn. */
+  const redeal = useCallback(async () => {
+    const exclude = [...playedIds(), ...(p.current ? [p.current.trackId] : [])];
+    const r = await plan(TAIL, exclude, p.current?.trackId);
+    p.replaceUpcoming(r.tracks);
+  }, [p]);
 
-  const voteOn = (trackId: number, direction: 'more' | 'less', keepNext?: boolean) => {
+  const voteOn = (trackId: number, direction: 'more' | 'less') => {
     setBusy(true);
     void vote(trackId, direction)
       .then(async (r) => {
         setMood(r.mood);
         const what = [r.applied.artist, ...r.applied.genres.slice(0, 2)].join(', ');
         say('good', direction === 'more' ? `More like: ${what}` : `Less like: ${what}`);
-        // The mood moved, so everything not yet played is re-dealt against the new mood.
-        await redeal(keepNext && next ? next : null);
+        // YES keeps the queue; NO re-deals it. One rule each — see the note above.
+        if (direction === 'less') await redeal();
       })
       .catch((e: Error) => say('bad', e.message))
       .finally(() => setBusy(false));
@@ -106,10 +104,10 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
       {!active && (
         <div className="isstart">
           <p>
-            Press play and vote. <strong>More like this</strong> and{' '}
-            <strong>less like this</strong> nudge the artist, the album and the genres of what
-            is playing — and the queue re-deals itself around your votes. The effect fades over
-            a few hours, so it follows tonight&rsquo;s mood, not last week&rsquo;s.
+            Two buttons, that&rsquo;s the whole thing: <strong>more like this</strong> or{' '}
+            <strong>less like this</strong> on whatever is playing. Yes leans the coming songs
+            toward this vibe; no steers away and re-deals the queue. Votes fade over a few
+            hours, so it follows tonight&rsquo;s mood, not last week&rsquo;s.
           </p>
           <div className="isstartrow">
             {p.current && (
@@ -127,63 +125,44 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
       {active && (
         <div className="isbody">
           {p.current && (
-            <div className="iscard now">
+            <div className="isnow">
               <div className="k muted">Now playing</div>
               <div className="t">{p.current.title}</div>
               <div className="s muted">
                 {p.current.artistName}
                 {p.current.albumTitle ? ` · ${p.current.albumTitle}` : ''}
               </div>
-              <div className="isvotes">
+              {/* The whole control surface: yes or no, thumb-sized. */}
+              <div className="isbig">
                 <button
-                  className="btn isvote more"
+                  className="isyes"
                   disabled={busy}
                   onClick={() => voteOn(p.current!.trackId, 'more')}
                 >
+                  <span className="mark">↑</span>
                   More like this
                 </button>
                 <button
-                  className="btn sec isvote less"
+                  className="isno"
                   disabled={busy}
                   onClick={() => voteOn(p.current!.trackId, 'less')}
                 >
+                  <span className="mark">↓</span>
                   Less like this
                 </button>
               </div>
             </div>
           )}
 
-          <div className="iscard next">
-            <div className="k muted">Up next</div>
+          {/* Read-only on purpose: next is a promise the skip button keeps. Voting on it was
+              a second steering wheel, and the car only needs one. */}
+          <div className="isnext muted">
             {next ? (
               <>
-                <div className="t">{next.title}</div>
-                <div className="s muted">
-                  {next.artistName}
-                  {next.albumTitle ? ` · ${next.albumTitle}` : ''}
-                </div>
-                <div className="isvotes">
-                  {/* Approving next locks it in place; the rest of the tail still re-deals. */}
-                  <button
-                    className="btn sec isvote more"
-                    disabled={busy}
-                    onClick={() => voteOn(next.trackId, 'more', true)}
-                  >
-                    Good pick
-                  </button>
-                  {/* The veto: the one vote that changes the present, because "next" has not
-                      happened yet — it is replaced before it ever reaches the speakers. */}
-                  <button
-                    className="btn sec isvote less"
-                    disabled={busy}
-                    onClick={() => voteOn(next.trackId, 'less')}
-                  >
-                    Not this one
-                  </button>
-                </div>
+                <span className="k">Up next</span> {next.title} — {next.artistName}
               </>
             ) : (
-              <div className="s muted">finding something…</div>
+              <span className="k">finding what's next…</span>
             )}
           </div>
 
