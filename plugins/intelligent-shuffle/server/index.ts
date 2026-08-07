@@ -8,14 +8,29 @@ import type { CratePlugin } from '../../../types/contract.js';
  * from the library scored against whatever the weights say right now.
  *
  * Each "more like this" or "less like this" adds points to the playing track, its album, its
- * artist, and the artist's genres. The decay is the design decision that makes this a DJ
+ * artist, its genres, and its era. The decay is the design decision that makes this a DJ
  * rather than a profile: a vote is worth half as much every four hours, so what you loved on
  * Tuesday night does not run Wednesday morning — the weights ARE the current mood, and an
  * empty table is simply an open mind (pure shuffle). Crate's My Algorithm feature already owns
  * long-term taste; this deliberately does not compete with it.
  *
- * Everything is per user: the weights table is keyed by user_id and every statement is scoped
- * by it, the same structural privacy the chords plugin uses.
+ * WHOSE GENRES? The track's own, when the file names them. artist_genres is Last.fm's opinion
+ * of the artist as a whole, and it files the quiet folk ballad on the metal record under nu
+ * metal — voting on that ballad should boost FOLK. Since crate started indexing the files' own
+ * genre tags (tracks.genres), a vote and a score both read the track first and fall back to
+ * the artist's genres only when the file is silent. On an older crate without the column, the
+ * fallback is simply all there is.
+ *
+ * WHO GETS THE CREDIT? A single vote cannot say whether you liked the band or the vibe, so the
+ * default split leans genre (see DELTAS). But the votes themselves disambiguate over a session:
+ * voting the same direction on DIFFERENT tracks by one artist is evidence about the ARTIST, and
+ * each such repeat escalates the artist's share of the vote (up to ESCALATE_MAX×). One System
+ * of a Down vote asks for more nu metal; three System of a Down votes ask for System of a Down.
+ * The escalation works both ways — repeatedly vetoing one artist's tracks buries the artist,
+ * not the genre their neighbours share.
+ *
+ * Everything is per user: every table is keyed by user_id and every statement is scoped by it,
+ * the same structural privacy the chords plugin uses.
  */
 
 /** A vote's worth halves every four hours. Mood, not memory. */
@@ -32,14 +47,19 @@ const FLOOR = 0.05;
  * answered a System of a Down vote with more System of a Down, which is a jukebox stuck on
  * repeat, not a DJ. The artist and album still get a nudge (you did like that song, and the
  * per-batch cap plus the no-adjacent rule keep even a liked artist from crowding the queue),
- * but the mood generalises.
+ * but the mood generalises. The artist nudge GROWS when repeated votes single an artist out —
+ * see the escalation note in the header.
+ *
+ * ERA IS A TREND, NOT A TARGET: worth less than genre per vote, because a vote usually means
+ * the song, not the decade — but eras accumulate across votes, so a listener working through
+ * a 70s mood (or vetoing everything post-2000) is noticed within a few songs.
  *
  * Vetoes bite harder than praise, and the track delta is the exception to the genre rule:
  * a specific song is the one thing a vote names exactly.
  */
 const DELTAS = {
-  more: { track: 2.5, album: 1, artist: 1, genre: 2.5 },
-  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5 },
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, era: 1.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, era: -2 },
 } as const;
 
 /** A summed score below this means "the mood says no": excluded outright, not just unlikely. */
@@ -64,7 +84,24 @@ const PER_ARTIST_CAP = 1;
  */
 const GENRE_CLAMP = 4;
 
-type Kind = 'artist' | 'album' | 'track' | 'genre';
+/**
+ * The most a track's decade may contribute, either direction. Smaller than the genre clamp on
+ * purpose — era seasons the mix, it should not out-vote what the music sounds like. At full
+ * negative clamp an era alone reaches HARD_NO, which is the intended reading of somebody who
+ * has vetoed a decade twice: stop playing it (until the mood decays).
+ */
+const ERA_CLAMP = 3;
+
+/**
+ * The artist-share escalation: how far back a repeat vote counts, how much each repeat adds,
+ * and the ceiling. Repeats are DISTINCT TRACKS by the same artist in the same direction — the
+ * signal is "they keep choosing this artist across songs", which one song voted twice is not.
+ */
+const ESCALATE_WINDOW_S = 6 * 3600;
+const ESCALATE_STEP = 0.75;
+const ESCALATE_MAX = 3;
+
+type Kind = 'artist' | 'album' | 'track' | 'genre' | 'era';
 
 interface LibRow {
   id: number;
@@ -74,40 +111,90 @@ interface LibRow {
   duration_s: number | null;
   norm_artist: string;
   norm_album: string;
+  /** Comma-joined lowercase genres from the FILE's tags; '' when untagged or pre-column crate. */
+  genres: string;
+  year: number | null;
 }
+
+/**
+ * The weights DDL, once — migrate() needs the same text twice (fresh create and the rebuild
+ * that loosens 1.2.0's CHECK, which predates 'era' and cannot be altered in place).
+ */
+const WEIGHTS_DDL = `
+  CREATE TABLE IF NOT EXISTS ishuffle_weights (
+    user_id    INTEGER NOT NULL,
+    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','era')),
+    key        TEXT    NOT NULL,
+    -- What to call this weight on screen ("Deftones", "nu metal", "1990s") — stored at write
+    -- time because the readable name is only cheaply known then.
+    label      TEXT    NOT NULL DEFAULT '',
+    weight     REAL    NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, kind, key)
+  );
+`;
 
 const now = () => Math.floor(Date.now() / 1000);
 const decayed = (w: number, at: number) => w * Math.pow(0.5, Math.max(0, now() - at) / HALF_LIFE_S);
+
+/** "1990s" from 1994; null when the year is unknown (0 is crate's "no year tag" sentinel). */
+const eraOf = (year: number | null): { key: string; label: string } | null => {
+  if (!year || year < 1900) return null;
+  const decade = Math.floor(year / 10) * 10;
+  return { key: String(decade), label: `${decade}s` };
+};
 
 const plugin: CratePlugin = {
   id: 'intelligent-shuffle',
 
   migrate(db) {
+    // The mood, as numbers. One row per (user, kind, key); weight decays by read-time maths
+    // rather than a sweeper, so a stale row is harmless and pruning is cosmetic.
+    db.exec(WEIGHTS_DDL);
+    // 1.2.0 shipped the table with a CHECK that does not know 'era'. SQLite cannot loosen a
+    // CHECK, so an old table is rebuilt around the same rows — the evening's mood survives
+    // the upgrade instead of being wiped by it.
+    const existing = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ishuffle_weights'")
+      .get() as { sql: string } | undefined;
+    if (existing && !existing.sql.includes("'era'")) {
+      db.exec(`
+        ALTER TABLE ishuffle_weights RENAME TO ishuffle_weights_old;
+        ${WEIGHTS_DDL}
+        INSERT INTO ishuffle_weights SELECT * FROM ishuffle_weights_old;
+        DROP TABLE ishuffle_weights_old;
+      `);
+    }
     db.exec(`
-      -- The mood, as numbers. One row per (user, kind, key); weight decays by read-time maths
-      -- rather than a sweeper, so a stale row is harmless and pruning is cosmetic.
-      CREATE TABLE IF NOT EXISTS ishuffle_weights (
-        user_id    INTEGER NOT NULL,
-        kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre')),
-        key        TEXT    NOT NULL,
-        -- What to call this weight on screen ("Deftones", "nu metal") — stored at write time
-        -- because the readable name is only cheaply known then.
-        label      TEXT    NOT NULL DEFAULT '',
-        weight     REAL    NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (user_id, kind, key)
+      -- The raw votes, briefly. Not a second copy of the mood — this exists so a NEW vote can
+      -- look at the last few hours and ask "have they been singling this artist out?" (the
+      -- escalation in the header). Rows older than the window are useless and pruned on write.
+      CREATE TABLE IF NOT EXISTS ishuffle_votes (
+        user_id     INTEGER NOT NULL,
+        track_id    INTEGER NOT NULL,
+        norm_artist TEXT    NOT NULL,
+        direction   TEXT    NOT NULL CHECK (direction IN ('more','less')),
+        at          INTEGER NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS ishuffle_votes_user ON ishuffle_votes (user_id, norm_artist, at);
     `);
   },
 
   routes(app, ctx) {
     const { db, need } = ctx;
 
+    // Track-level genres arrived in crate after this plugin did; a plugin must run on the
+    // crate it finds. Probed once at boot: absent column means every track reads '' and the
+    // artist fallback carries the whole load, which is exactly 1.2.0's behaviour.
+    const hasTrackGenres = (db.prepare('PRAGMA table_info(tracks)').all() as { name: string }[])
+      .some((c) => c.name === 'genres');
+    const genresCol = hasTrackGenres ? 't.genres' : "'' AS genres";
+
     const library = (userId: number): LibRow[] =>
       db
         .prepare(
           `SELECT t.id, t.title, t.artist_name, t.album_title, t.duration_s,
-                  t.norm_artist, t.norm_album
+                  t.norm_artist, t.norm_album, ${genresCol}, t.year
              FROM user_tracks ut JOIN tracks t ON t.id = ut.track_id
             WHERE ut.user_id = ?`,
         )
@@ -123,7 +210,7 @@ const plugin: CratePlugin = {
       return map;
     };
 
-    /** Genres per artist, for the artists asked about. */
+    /** Genres per artist, for the artists asked about. The fallback when a file names none. */
     const genresOf = (artists: string[]): Map<string, string[]> => {
       const out = new Map<string, string[]>();
       if (!artists.length) return out;
@@ -138,6 +225,10 @@ const plugin: CratePlugin = {
       }
       return out;
     };
+
+    /** The genres a vote or a score should read for THIS track: its own first, artist second. */
+    const genresFor = (t: Pick<LibRow, 'genres' | 'norm_artist'>, artistGenres: Map<string, string[]>): string[] =>
+      t.genres ? t.genres.split(', ') : artistGenres.get(t.norm_artist) ?? [];
 
     const bump = db.prepare(
       `INSERT INTO ishuffle_weights (user_id, kind, key, label, weight, updated_at)
@@ -209,7 +300,7 @@ const plugin: CratePlugin = {
 
       const scored = pool
         .map((t) => {
-          const gs = genres.get(t.norm_artist) ?? [];
+          const gs = genresFor(t, genres);
           // Sum of matched genre weights, clamped — not an average: averaging diluted a
           // two-of-four match to half strength, which punished exactly the "other music LIKE
           // this" candidates the feature exists to surface.
@@ -217,11 +308,16 @@ const plugin: CratePlugin = {
             -GENRE_CLAMP,
             Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0)),
           );
+          const era = eraOf(t.year);
+          const ew = era
+            ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0))
+            : 0;
           const score =
             (w.get(`track|${String(t.id)}`)?.w ?? 0) +
             (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) +
             (w.get(`artist|${t.norm_artist}`)?.w ?? 0) +
-            gw;
+            gw +
+            ew;
           return { t, score };
         })
         .filter((e) => e.score > HARD_NO);
@@ -288,25 +384,49 @@ const plugin: CratePlugin = {
       if (!direction) return reply.code(400).send({ error: "direction must be 'more' or 'less'" });
 
       const t = db
-        .prepare('SELECT id, title, artist_name, album_title, norm_artist, norm_album FROM tracks WHERE id = ?')
-        .get(trackId) as (LibRow & { id: number }) | undefined;
+        .prepare(
+          `SELECT id, title, artist_name, album_title, norm_artist, norm_album, ${genresCol}, year
+             FROM tracks t WHERE id = ?`,
+        )
+        .get(trackId) as LibRow | undefined;
       if (!t) return reply.code(404).send({ error: 'no such track' });
 
       const d = DELTAS[direction];
+      // The adaptive split: distinct OTHER tracks by this artist, voted the same way inside
+      // the window. Zero repeats = the default genre-heavy split; each repeat shifts credit
+      // toward the artist, because the listener keeps naming them (see the header).
+      const repeats = (
+        db
+          .prepare(
+            `SELECT COUNT(DISTINCT track_id) AS n FROM ishuffle_votes
+              WHERE user_id = ? AND norm_artist = ? AND direction = ? AND at > ? AND track_id != ?`,
+          )
+          .get(c.id, t.norm_artist, direction, now() - ESCALATE_WINDOW_S, t.id) as { n: number }
+      ).n;
+      const artistShare = Math.min(ESCALATE_MAX, 1 + ESCALATE_STEP * repeats);
+
       addWeight(c.id, 'track', String(t.id), t.title, d.track);
       addWeight(c.id, 'album', `${t.norm_artist}|${t.norm_album}`, t.album_title, d.album);
-      addWeight(c.id, 'artist', t.norm_artist, t.artist_name, d.artist);
-      const gs = (genresOf([t.norm_artist]).get(t.norm_artist) ?? []).slice(0, 6);
+      addWeight(c.id, 'artist', t.norm_artist, t.artist_name, d.artist * artistShare);
+      const gs = genresFor(t, genresOf([t.norm_artist])).slice(0, 6);
       for (const g of gs) addWeight(c.id, 'genre', g, g, d.genre);
+      const era = eraOf(t.year);
+      if (era) addWeight(c.id, 'era', era.key, era.label, d.era);
 
-      // Prune the noise floor while we are here — cosmetic, keeps the table mood-sized.
+      db.prepare(
+        'INSERT INTO ishuffle_votes (user_id, track_id, norm_artist, direction, at) VALUES (?, ?, ?, ?, ?)',
+      ).run(c.id, t.id, t.norm_artist, direction, now());
+
+      // Prune while we are here — cosmetic for weights, and votes beyond the escalation
+      // window are dead weight for everyone.
       db.prepare(
         'DELETE FROM ishuffle_weights WHERE user_id = ? AND abs(weight) < ? AND updated_at < ?',
       ).run(c.id, FLOOR, now() - 24 * 3600);
+      db.prepare('DELETE FROM ishuffle_votes WHERE at < ?').run(now() - ESCALATE_WINDOW_S);
 
       return {
         ok: true,
-        applied: { artist: t.artist_name, album: t.album_title, genres: gs },
+        applied: { artist: t.artist_name, album: t.album_title, genres: gs, era: era?.label ?? null },
         mood: mood(c.id),
       };
     });
@@ -324,6 +444,8 @@ const plugin: CratePlugin = {
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
       db.prepare('DELETE FROM ishuffle_weights WHERE user_id = ?').run(c.id);
+      // The vote log seeds the artist escalation; a fresh mind forgets that pattern too.
+      db.prepare('DELETE FROM ishuffle_votes WHERE user_id = ?').run(c.id);
       return { ok: true };
     });
   },

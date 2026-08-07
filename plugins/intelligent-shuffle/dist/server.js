@@ -2,39 +2,71 @@
 var HALF_LIFE_S = 4 * 3600;
 var FLOOR = 0.05;
 var DELTAS = {
-  more: { track: 2.5, album: 1, artist: 1, genre: 2.5 },
-  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5 }
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, era: 1.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, era: -2 }
 };
 var HARD_NO = -3;
 var TEMPERATURE = 1.5;
 var PER_ARTIST_CAP = 1;
 var GENRE_CLAMP = 4;
+var ERA_CLAMP = 3;
+var ESCALATE_WINDOW_S = 6 * 3600;
+var ESCALATE_STEP = 0.75;
+var ESCALATE_MAX = 3;
+var WEIGHTS_DDL = `
+  CREATE TABLE IF NOT EXISTS ishuffle_weights (
+    user_id    INTEGER NOT NULL,
+    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','era')),
+    key        TEXT    NOT NULL,
+    -- What to call this weight on screen ("Deftones", "nu metal", "1990s") \u2014 stored at write
+    -- time because the readable name is only cheaply known then.
+    label      TEXT    NOT NULL DEFAULT '',
+    weight     REAL    NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, kind, key)
+  );
+`;
 var now = () => Math.floor(Date.now() / 1e3);
 var decayed = (w, at) => w * Math.pow(0.5, Math.max(0, now() - at) / HALF_LIFE_S);
+var eraOf = (year) => {
+  if (!year || year < 1900) return null;
+  const decade = Math.floor(year / 10) * 10;
+  return { key: String(decade), label: `${decade}s` };
+};
 var plugin = {
   id: "intelligent-shuffle",
   migrate(db) {
+    db.exec(WEIGHTS_DDL);
+    const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ishuffle_weights'").get();
+    if (existing && !existing.sql.includes("'era'")) {
+      db.exec(`
+        ALTER TABLE ishuffle_weights RENAME TO ishuffle_weights_old;
+        ${WEIGHTS_DDL}
+        INSERT INTO ishuffle_weights SELECT * FROM ishuffle_weights_old;
+        DROP TABLE ishuffle_weights_old;
+      `);
+    }
     db.exec(`
-      -- The mood, as numbers. One row per (user, kind, key); weight decays by read-time maths
-      -- rather than a sweeper, so a stale row is harmless and pruning is cosmetic.
-      CREATE TABLE IF NOT EXISTS ishuffle_weights (
-        user_id    INTEGER NOT NULL,
-        kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre')),
-        key        TEXT    NOT NULL,
-        -- What to call this weight on screen ("Deftones", "nu metal") \u2014 stored at write time
-        -- because the readable name is only cheaply known then.
-        label      TEXT    NOT NULL DEFAULT '',
-        weight     REAL    NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (user_id, kind, key)
+      -- The raw votes, briefly. Not a second copy of the mood \u2014 this exists so a NEW vote can
+      -- look at the last few hours and ask "have they been singling this artist out?" (the
+      -- escalation in the header). Rows older than the window are useless and pruned on write.
+      CREATE TABLE IF NOT EXISTS ishuffle_votes (
+        user_id     INTEGER NOT NULL,
+        track_id    INTEGER NOT NULL,
+        norm_artist TEXT    NOT NULL,
+        direction   TEXT    NOT NULL CHECK (direction IN ('more','less')),
+        at          INTEGER NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS ishuffle_votes_user ON ishuffle_votes (user_id, norm_artist, at);
     `);
   },
   routes(app, ctx) {
     const { db, need } = ctx;
+    const hasTrackGenres = db.prepare("PRAGMA table_info(tracks)").all().some((c) => c.name === "genres");
+    const genresCol = hasTrackGenres ? "t.genres" : "'' AS genres";
     const library = (userId) => db.prepare(
       `SELECT t.id, t.title, t.artist_name, t.album_title, t.duration_s,
-                  t.norm_artist, t.norm_album
+                  t.norm_artist, t.norm_album, ${genresCol}, t.year
              FROM user_tracks ut JOIN tracks t ON t.id = ut.track_id
             WHERE ut.user_id = ?`
     ).all(userId);
@@ -56,6 +88,7 @@ var plugin = {
       }
       return out;
     };
+    const genresFor = (t, artistGenres) => t.genres ? t.genres.split(", ") : artistGenres.get(t.norm_artist) ?? [];
     const bump = db.prepare(
       `INSERT INTO ishuffle_weights (user_id, kind, key, label, weight, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -95,12 +128,14 @@ var plugin = {
         pool = pool.filter((t) => !recent.has(t.id));
       }
       const scored = pool.map((t) => {
-        const gs = genres.get(t.norm_artist) ?? [];
+        const gs = genresFor(t, genres);
         const gw = Math.max(
           -GENRE_CLAMP,
           Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0))
         );
-        const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw;
+        const era = eraOf(t.year);
+        const ew = era ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0)) : 0;
+        const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw + ew;
         return { t, score };
       }).filter((e) => e.score > HARD_NO);
       const picked = [];
@@ -152,20 +187,34 @@ var plugin = {
       const trackId = Number(b.trackId);
       const direction = b.direction === "less" ? "less" : b.direction === "more" ? "more" : null;
       if (!direction) return reply.code(400).send({ error: "direction must be 'more' or 'less'" });
-      const t = db.prepare("SELECT id, title, artist_name, album_title, norm_artist, norm_album FROM tracks WHERE id = ?").get(trackId);
+      const t = db.prepare(
+        `SELECT id, title, artist_name, album_title, norm_artist, norm_album, ${genresCol}, year
+             FROM tracks t WHERE id = ?`
+      ).get(trackId);
       if (!t) return reply.code(404).send({ error: "no such track" });
       const d = DELTAS[direction];
+      const repeats = db.prepare(
+        `SELECT COUNT(DISTINCT track_id) AS n FROM ishuffle_votes
+              WHERE user_id = ? AND norm_artist = ? AND direction = ? AND at > ? AND track_id != ?`
+      ).get(c.id, t.norm_artist, direction, now() - ESCALATE_WINDOW_S, t.id).n;
+      const artistShare = Math.min(ESCALATE_MAX, 1 + ESCALATE_STEP * repeats);
       addWeight(c.id, "track", String(t.id), t.title, d.track);
       addWeight(c.id, "album", `${t.norm_artist}|${t.norm_album}`, t.album_title, d.album);
-      addWeight(c.id, "artist", t.norm_artist, t.artist_name, d.artist);
-      const gs = (genresOf([t.norm_artist]).get(t.norm_artist) ?? []).slice(0, 6);
+      addWeight(c.id, "artist", t.norm_artist, t.artist_name, d.artist * artistShare);
+      const gs = genresFor(t, genresOf([t.norm_artist])).slice(0, 6);
       for (const g of gs) addWeight(c.id, "genre", g, g, d.genre);
+      const era = eraOf(t.year);
+      if (era) addWeight(c.id, "era", era.key, era.label, d.era);
+      db.prepare(
+        "INSERT INTO ishuffle_votes (user_id, track_id, norm_artist, direction, at) VALUES (?, ?, ?, ?, ?)"
+      ).run(c.id, t.id, t.norm_artist, direction, now());
       db.prepare(
         "DELETE FROM ishuffle_weights WHERE user_id = ? AND abs(weight) < ? AND updated_at < ?"
       ).run(c.id, FLOOR, now() - 24 * 3600);
+      db.prepare("DELETE FROM ishuffle_votes WHERE at < ?").run(now() - ESCALATE_WINDOW_S);
       return {
         ok: true,
-        applied: { artist: t.artist_name, album: t.album_title, genres: gs },
+        applied: { artist: t.artist_name, album: t.album_title, genres: gs, era: era?.label ?? null },
         mood: mood(c.id)
       };
     });
@@ -180,6 +229,7 @@ var plugin = {
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: "a token caller has no library" });
       db.prepare("DELETE FROM ishuffle_weights WHERE user_id = ?").run(c.id);
+      db.prepare("DELETE FROM ishuffle_votes WHERE user_id = ?").run(c.id);
       return { ok: true };
     });
   }

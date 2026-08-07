@@ -28,10 +28,7 @@ var { get, post, put, del } = window.crateHost.api;
 
 // plugins/intelligent-shuffle/client/api.ts
 var plan = (count, exclude, afterTrackId) => post("/api/ishuffle/plan", { count, exclude, afterTrackId });
-var vote = (trackId, direction) => post(
-  "/api/ishuffle/vote",
-  { trackId, direction }
-);
+var vote = (trackId, direction) => post("/api/ishuffle/vote", { trackId, direction });
 var moodNow = () => get("/api/ishuffle/mood");
 var resetMood = () => post("/api/ishuffle/reset", {});
 
@@ -104,7 +101,7 @@ function IntelligentShufflePanel({ onClose, say }) {
     setBusy(true);
     void vote(trackId, direction).then(async (r) => {
       setMood(r.mood);
-      const what = [r.applied.artist, ...r.applied.genres.slice(0, 2)].join(", ");
+      const what = [r.applied.artist, ...r.applied.genres.slice(0, 2), ...r.applied.era ? [r.applied.era] : []].join(", ");
       say("good", direction === "more" ? `More like: ${what}` : `Less like: ${what}`);
       if (direction === "less") await redeal();
     }).catch((e) => say("bad", e.message)).finally(() => setBusy(false));

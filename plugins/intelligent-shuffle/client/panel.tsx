@@ -50,7 +50,8 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
     void vote(trackId, direction)
       .then(async (r) => {
         setMood(r.mood);
-        const what = [r.applied.artist, ...r.applied.genres.slice(0, 2)].join(', ');
+        // Artist, a genre or two, and the decade: the vote's whole reach in one line.
+        const what = [r.applied.artist, ...r.applied.genres.slice(0, 2), ...(r.applied.era ? [r.applied.era] : [])].join(', ');
         say('good', direction === 'more' ? `More like: ${what}` : `Less like: ${what}`);
         // YES keeps the queue; NO re-deals it. One rule each — see the note above.
         if (direction === 'less') await redeal();

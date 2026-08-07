@@ -11,7 +11,7 @@ export interface PlannedTrack {
 }
 
 export interface MoodEntry {
-  kind: 'artist' | 'album' | 'track' | 'genre';
+  kind: 'artist' | 'album' | 'track' | 'genre' | 'era';
   label: string;
   weight: number;
 }
@@ -26,10 +26,12 @@ export const plan = (count: number, exclude: number[], afterTrackId?: number) =>
   post<{ tracks: PlannedTrack[] }>('/api/ishuffle/plan', { count, exclude, afterTrackId });
 
 export const vote = (trackId: number, direction: 'more' | 'less') =>
-  post<{ ok: true; applied: { artist: string; album: string; genres: string[] }; mood: Mood }>(
-    '/api/ishuffle/vote',
-    { trackId, direction },
-  );
+  post<{
+    ok: true;
+    // genres are the TRACK's own when its file names them; era is its decade ("1990s") or null.
+    applied: { artist: string; album: string; genres: string[]; era: string | null };
+    mood: Mood;
+  }>('/api/ishuffle/vote', { trackId, direction });
 
 export const moodNow = () => get<{ mood: Mood }>('/api/ishuffle/mood');
 
