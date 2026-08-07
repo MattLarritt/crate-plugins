@@ -48,8 +48,21 @@ const HARD_NO = -3;
 /** Softmax temperature for picking. Lower = obeys the mood harder; higher = more adventurous. */
 const TEMPERATURE = 1.5;
 
-/** Tracks the same artist may occupy in one planned batch — the anti-tunnel rule. */
-const PER_ARTIST_CAP = 2;
+/**
+ * Tracks the same artist may occupy in one planned batch. ONE: a DJ plays the room's vibe,
+ * not a discography — the artist you voted for earns a slot, not a residency, and the genre
+ * weights carry the enthusiasm to their neighbours instead.
+ */
+const PER_ARTIST_CAP = 1;
+
+/**
+ * The most the genre stack may contribute to one candidate, either direction. The cap is the
+ * anti-self-reinforcement device: a voted artist matches ALL of its own genres, so an uncapped
+ * sum handed it a bonus no genre-mate could reach and the queue tunnelled anyway. Clamped, a
+ * strong genre-mate saturates the same bonus, and the voted artist's remaining edge is only
+ * its (deliberately small) artist and album nudges.
+ */
+const GENRE_CLAMP = 4;
 
 type Kind = 'artist' | 'album' | 'track' | 'genre';
 
@@ -197,9 +210,13 @@ const plugin: CratePlugin = {
       const scored = pool
         .map((t) => {
           const gs = genres.get(t.norm_artist) ?? [];
-          const gw = gs.length
-            ? gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0) / gs.length
-            : 0;
+          // Sum of matched genre weights, clamped — not an average: averaging diluted a
+          // two-of-four match to half strength, which punished exactly the "other music LIKE
+          // this" candidates the feature exists to surface.
+          const gw = Math.max(
+            -GENRE_CLAMP,
+            Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0)),
+          );
           const score =
             (w.get(`track|${String(t.id)}`)?.w ?? 0) +
             (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) +

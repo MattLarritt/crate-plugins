@@ -7,7 +7,8 @@ var DELTAS = {
 };
 var HARD_NO = -3;
 var TEMPERATURE = 1.5;
-var PER_ARTIST_CAP = 2;
+var PER_ARTIST_CAP = 1;
+var GENRE_CLAMP = 4;
 var now = () => Math.floor(Date.now() / 1e3);
 var decayed = (w, at) => w * Math.pow(0.5, Math.max(0, now() - at) / HALF_LIFE_S);
 var plugin = {
@@ -95,7 +96,10 @@ var plugin = {
       }
       const scored = pool.map((t) => {
         const gs = genres.get(t.norm_artist) ?? [];
-        const gw = gs.length ? gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0) / gs.length : 0;
+        const gw = Math.max(
+          -GENRE_CLAMP,
+          Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0))
+        );
         const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw;
         return { t, score };
       }).filter((e) => e.score > HARD_NO);
