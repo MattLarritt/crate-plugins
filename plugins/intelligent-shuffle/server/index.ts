@@ -82,7 +82,7 @@ const HARD_NO = -3;
  * family lit up per vote, the variety comes from the breadth of what scores well — the
  * sampler can afford conviction.
  */
-const TEMPERATURE = 1.0;
+const TEMPERATURE = 0.85;
 
 /**
  * Tracks the same artist may occupy in one planned batch. ONE: a DJ plays the room's vibe,
@@ -101,11 +101,16 @@ const PER_ARTIST_CAP = 1;
 const GENRE_CLAMP = 4;
 
 /**
- * The most the FAMILY layer may contribute, either direction. Between genre (±4) and era
- * (±3): the family is the broad brush — it decides which continent the queue lives on —
- * while exact genres pick the neighbourhoods inside it.
+ * The most the FAMILY layer may contribute, either direction.
+ *
+ * Higher than the genre clamp on purpose, which looks backwards until you watch it work:
+ * a vote lights SEVERAL families (a rap-metal record writes metal, alt and rock at 2
+ * each), and a track is ranked by how many of them it belongs to. At a clamp of 3 a
+ * plain-rock track (≈2.9 with adjacency) and a metal+alt+rock track (6, clamped to 3)
+ * scored nearly the same — the clamp was erasing exactly the distinction the family layer
+ * exists to draw. At 4.5 the strains the vote actually named stay ahead of the broad tent.
  */
-const STYLE_CLAMP = 3;
+const STYLE_CLAMP = 4.5;
 
 /**
  * How much an ADJACENT family's weight counts toward a track. Musicmap's insight: families

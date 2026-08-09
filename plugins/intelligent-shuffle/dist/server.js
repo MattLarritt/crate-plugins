@@ -108,10 +108,10 @@ var DELTAS = {
   less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2 }
 };
 var HARD_NO = -3;
-var TEMPERATURE = 1;
+var TEMPERATURE = 0.85;
 var PER_ARTIST_CAP = 1;
 var GENRE_CLAMP = 4;
-var STYLE_CLAMP = 3;
+var STYLE_CLAMP = 4.5;
 var ADJ_FACTOR = 0.35;
 var ERA_CLAMP = 3;
 var ESCALATE_WINDOW_S = 6 * 3600;
