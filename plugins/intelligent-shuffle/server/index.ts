@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { CratePlugin } from '../../../types/contract.js';
+import { ADJACENT, FAMILY_LABEL, familiesOf, isJunk, type Family } from './taxonomy.js';
 
 /**
  * Intelligent Shuffle: a dynamic DJ over the user's own library.
@@ -20,6 +21,15 @@ import type { CratePlugin } from '../../../types/contract.js';
  * genre tags (tracks.genres), a vote and a score both read the track first and fall back to
  * the artist's genres only when the file is silent. On an older crate without the column, the
  * fallback is simply all there is.
+ *
+ * WHICH GENRES COUNT AS "LIKE THIS"? Exact strings are too sparse to steer with — a vote on a
+ * nu metal track used to light up only tracks tagged those exact words, and alt metal next
+ * door stayed dark, which read as randomness. Genres now also fold into musicmap-style
+ * SUPER-GENRE families (see taxonomy.ts): a vote writes the family alongside the exact
+ * genres, scoring gives every track in the family a lift and adjacent families (metal ↔
+ * industrial ↔ punk...) a smaller one, and the exact-genre weights supply the fine grain on
+ * top. One System of a Down vote now means "metal-family, especially these strains" — which
+ * is what a person means by it.
  *
  * WHO GETS THE CREDIT? A single vote cannot say whether you liked the band or the vibe, so the
  * default split leans genre (see DELTAS). But the votes themselves disambiguate over a session:
@@ -58,15 +68,21 @@ const FLOOR = 0.05;
  * a specific song is the one thing a vote names exactly.
  */
 const DELTAS = {
-  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, era: 1.5 },
-  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, era: -2 },
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, style: 2, era: 1.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2 },
 } as const;
 
 /** A summed score below this means "the mood says no": excluded outright, not just unlikely. */
 const HARD_NO = -3;
 
-/** Softmax temperature for picking. Lower = obeys the mood harder; higher = more adventurous. */
-const TEMPERATURE = 1.5;
+/**
+ * Softmax temperature for picking. Lower = obeys the mood harder; higher = more adventurous.
+ * Dropped from 1.5 when families arrived: back then sharpening meant tunnelling into one
+ * exact genre string, so the sampler stayed timid and the queue read as random. With a whole
+ * family lit up per vote, the variety comes from the breadth of what scores well — the
+ * sampler can afford conviction.
+ */
+const TEMPERATURE = 1.0;
 
 /**
  * Tracks the same artist may occupy in one planned batch. ONE: a DJ plays the room's vibe,
@@ -85,6 +101,20 @@ const PER_ARTIST_CAP = 1;
 const GENRE_CLAMP = 4;
 
 /**
+ * The most the FAMILY layer may contribute, either direction. Between genre (±4) and era
+ * (±3): the family is the broad brush — it decides which continent the queue lives on —
+ * while exact genres pick the neighbourhoods inside it.
+ */
+const STYLE_CLAMP = 3;
+
+/**
+ * How much an ADJACENT family's weight counts toward a track. Musicmap's insight: families
+ * fade into their neighbours, so a metal mood leans industrial and punk a little — but only
+ * a little, or every vote would flood the whole map.
+ */
+const ADJ_FACTOR = 0.35;
+
+/**
  * The most a track's decade may contribute, either direction. Smaller than the genre clamp on
  * purpose — era seasons the mix, it should not out-vote what the music sounds like. At full
  * negative clamp an era alone reaches HARD_NO, which is the intended reading of somebody who
@@ -101,7 +131,7 @@ const ESCALATE_WINDOW_S = 6 * 3600;
 const ESCALATE_STEP = 0.75;
 const ESCALATE_MAX = 3;
 
-type Kind = 'artist' | 'album' | 'track' | 'genre' | 'era';
+type Kind = 'artist' | 'album' | 'track' | 'genre' | 'style' | 'era';
 
 interface LibRow {
   id: number;
@@ -123,7 +153,7 @@ interface LibRow {
 const WEIGHTS_DDL = `
   CREATE TABLE IF NOT EXISTS ishuffle_weights (
     user_id    INTEGER NOT NULL,
-    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','era')),
+    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','style','era')),
     key        TEXT    NOT NULL,
     -- What to call this weight on screen ("Deftones", "nu metal", "1990s") — stored at write
     -- time because the readable name is only cheaply known then.
@@ -151,13 +181,13 @@ const plugin: CratePlugin = {
     // The mood, as numbers. One row per (user, kind, key); weight decays by read-time maths
     // rather than a sweeper, so a stale row is harmless and pruning is cosmetic.
     db.exec(WEIGHTS_DDL);
-    // 1.2.0 shipped the table with a CHECK that does not know 'era'. SQLite cannot loosen a
-    // CHECK, so an old table is rebuilt around the same rows — the evening's mood survives
-    // the upgrade instead of being wiped by it.
+    // Earlier versions shipped the table with a narrower CHECK ('era' arrived in 1.3.0,
+    // 'style' in 1.4.0). SQLite cannot loosen a CHECK, so an old table is rebuilt around the
+    // same rows — the evening's mood survives the upgrade instead of being wiped by it.
     const existing = db
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ishuffle_weights'")
       .get() as { sql: string } | undefined;
-    if (existing && !existing.sql.includes("'era'")) {
+    if (existing && !existing.sql.includes("'style'")) {
       db.exec(`
         ALTER TABLE ishuffle_weights RENAME TO ishuffle_weights_old;
         ${WEIGHTS_DDL}
@@ -226,9 +256,26 @@ const plugin: CratePlugin = {
       return out;
     };
 
-    /** The genres a vote or a score should read for THIS track: its own first, artist second. */
-    const genresFor = (t: Pick<LibRow, 'genres' | 'norm_artist'>, artistGenres: Map<string, string[]>): string[] =>
-      t.genres ? t.genres.split(', ') : artistGenres.get(t.norm_artist) ?? [];
+    /**
+     * The genres a vote or a score should read for THIS track: its own file tags MERGED
+     * with the artist's Last.fm tags, junk filtered, capped.
+     *
+     * Merged, not fallback — files are often tagged with one broad word ("rock" covers a
+     * third of the library) while the artist tags carry the strain that actually matters:
+     * Rage Against the Machine's file says "rock", Last.fm says rap metal and funk metal,
+     * and "more like this" means the latter. Junk tags ("seen live") are dropped here so a
+     * vote can never turn them into weights that correlate unrelated artists.
+     */
+    const genresFor = (t: Pick<LibRow, 'genres' | 'norm_artist'>, artistGenres: Map<string, string[]>): string[] => {
+      const own = t.genres ? t.genres.split(', ') : [];
+      const artist = artistGenres.get(t.norm_artist) ?? [];
+      const out: string[] = [];
+      for (const g of [...own, ...artist]) {
+        const n = g.trim().toLowerCase();
+        if (n && !isJunk(n) && !out.includes(n)) out.push(n);
+      }
+      return out.slice(0, 10);
+    };
 
     const bump = db.prepare(
       `INSERT INTO ishuffle_weights (user_id, kind, key, label, weight, updated_at)
@@ -246,11 +293,17 @@ const plugin: CratePlugin = {
       bump.run(userId, kind, key, label, current + delta, now());
     };
 
-    /** The mood, human-readable: what it is leaning into and steering away from. */
+    /**
+     * The mood, human-readable: what it is leaning into and steering away from.
+     *
+     * Track weights are deliberately NOT shown — "leaning into: Saturnine & Iron Jaw" tells
+     * a person nothing actionable; the mood is about vibes, and a single song is not a vibe.
+     * The weight still steers scoring (a loved song resurfaces), it just isn't a chip.
+     */
     const mood = (userId: number) => {
       const all = [...weights(userId).entries()]
         .map(([k, v]) => ({ kind: k.split('|')[0] as Kind, label: v.label || k.split('|')[1]!, weight: v.w }))
-        .filter((e) => Math.abs(e.weight) >= FLOOR);
+        .filter((e) => e.kind !== 'track' && Math.abs(e.weight) >= FLOOR);
       all.sort((a, b) => b.weight - a.weight);
       return {
         into: all.filter((e) => e.weight > 0).slice(0, 8),
@@ -308,6 +361,26 @@ const plugin: CratePlugin = {
             -GENRE_CLAMP,
             Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0)),
           );
+          /*
+           * The family layer: this track's own families at full strength, their musicmap
+           * neighbours at ADJ_FACTOR. This is what makes one System of a Down vote reach
+           * every strain of metal in the library rather than only its exact tag twins.
+           */
+          const fams = familiesOf(gs);
+          let sw = 0;
+          const counted = new Set<Family>();
+          for (const f of fams) {
+            sw += w.get(`style|${f}`)?.w ?? 0;
+            counted.add(f);
+          }
+          for (const f of fams) {
+            for (const adj of ADJACENT[f]) {
+              if (counted.has(adj)) continue;
+              counted.add(adj);
+              sw += ADJ_FACTOR * (w.get(`style|${adj}`)?.w ?? 0);
+            }
+          }
+          sw = Math.max(-STYLE_CLAMP, Math.min(STYLE_CLAMP, sw));
           const era = eraOf(t.year);
           const ew = era
             ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0))
@@ -317,6 +390,7 @@ const plugin: CratePlugin = {
             (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) +
             (w.get(`artist|${t.norm_artist}`)?.w ?? 0) +
             gw +
+            sw +
             ew;
           return { t, score };
         })
@@ -410,6 +484,9 @@ const plugin: CratePlugin = {
       addWeight(c.id, 'artist', t.norm_artist, t.artist_name, d.artist * artistShare);
       const gs = genresFor(t, genresOf([t.norm_artist])).slice(0, 6);
       for (const g of gs) addWeight(c.id, 'genre', g, g, d.genre);
+      // The family layer: the same vote at the super-genre scale, so kin genres light up.
+      const fams = familiesOf(gs).slice(0, 3);
+      for (const f of fams) addWeight(c.id, 'style', f, FAMILY_LABEL[f], d.style);
       const era = eraOf(t.year);
       if (era) addWeight(c.id, 'era', era.key, era.label, d.era);
 

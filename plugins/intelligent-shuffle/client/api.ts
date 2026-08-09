@@ -11,7 +11,7 @@ export interface PlannedTrack {
 }
 
 export interface MoodEntry {
-  kind: 'artist' | 'album' | 'track' | 'genre' | 'era';
+  kind: 'artist' | 'album' | 'track' | 'genre' | 'style' | 'era';
   label: string;
   weight: number;
 }

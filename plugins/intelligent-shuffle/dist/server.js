@@ -1,14 +1,118 @@
+// plugins/intelligent-shuffle/server/taxonomy.ts
+var FAMILY_LABEL = {
+  metal: "metal",
+  industrial: "industrial",
+  punk: "punk & hardcore",
+  alt: "alt & indie",
+  rock: "rock",
+  folk: "folk & country",
+  blues: "blues & jazz",
+  rnb: "r&b & soul",
+  rap: "hip-hop",
+  pop: "pop",
+  electronic: "electronic",
+  downtempo: "downtempo",
+  reggae: "reggae",
+  world: "world",
+  classical: "classical"
+};
+var EDGES = [
+  ["metal", "industrial"],
+  ["metal", "punk"],
+  ["metal", "alt"],
+  ["punk", "alt"],
+  ["alt", "rock"],
+  ["alt", "pop"],
+  ["rock", "blues"],
+  ["rock", "folk"],
+  ["folk", "blues"],
+  ["blues", "rnb"],
+  ["rnb", "pop"],
+  ["rnb", "rap"],
+  ["rap", "electronic"],
+  ["rap", "reggae"],
+  ["rnb", "reggae"],
+  ["pop", "electronic"],
+  ["electronic", "industrial"],
+  ["electronic", "downtempo"],
+  ["downtempo", "rnb"],
+  ["world", "pop"],
+  ["classical", "downtempo"]
+];
+var ADJACENT = (() => {
+  const out = Object.fromEntries(
+    Object.keys(FAMILY_LABEL).map((f) => [f, []])
+  );
+  for (const [a, b] of EDGES) {
+    out[a].push(b);
+    out[b].push(a);
+  }
+  return out;
+})();
+var JUNK = /^(?:seen live|american|british|english|irish|scottish|german|french|australian|canadian|usa|uk|america|états unidos|estados unidos|américain|france|\d{2,4}s?|(?:fe)?male vocals?(?:ists?)?|vocalist|guitarist|guitar|piano|actor|fictional|political|queer|compilation|special purpose artist|grammy winner|favou?rites?|awesome|good)$/;
+var RULES = [
+  [/metal|thrash|doom|rapcore|neue deutsche|^heavy$/, "metal"],
+  [/industrial|^noise/, "industrial"],
+  [/trip.?hop|downtempo|ambient|chillout|new age|lo-fi|lofi/, "downtempo"],
+  [/hip.?hop|\brap\b|\btrap\b|boom bap|dirty south|gangsta|drill|grime/, "rap"],
+  [/punk|hardcore|easycore|\bemo\b|emocore|screamo/, "punk"],
+  [/reggae|dancehall|\bska\b|dub\b/, "reggae"],
+  [/indian|bollywood|latin|afrobeat|k-pop|j-pop|world/, "world"],
+  [/country|folk|americana|bluegrass|singer.?.?songwriter|songwriter|red dirt|nashville|heartland|acoustic/, "folk"],
+  [
+    /grunge|indie|alternative|\balt\b|alt\.|alternrock|shoegaze|dream pop|madchester|new wave|britpop|jangle|bedroom pop|art rock|art pop|experimental|post-rock|hypnagogic|slowcore|noise rock/,
+    "alt"
+  ],
+  [
+    /rock|rockabilly|stoner|surf|psychedeli|krautrock|palm desert|desert|jam band|progressive|heavy psych/,
+    "rock"
+  ],
+  [/r&b|r b|rnb|\bsoul\b|funk|disco|motown|neo.?soul/, "rnb"],
+  [/pop|ballad|yacht/, "pop"],
+  [
+    /electro|techno|house|trance|\bedm\b|eurodance|eurobeat|drum & bass|drum and bass|drum 'n' bass|dubstep|jungle|breakbeat|\bdance\b|rave|leftfield|tronica|garage$|uk garage|idm|synthwave/,
+    "electronic"
+  ],
+  [/blues|jazz|swing|bebop/, "blues"],
+  [/classical|score|soundtrack|orchestral|baroque|opera/, "classical"]
+];
+function isJunk(genre) {
+  return JUNK.test(genre.trim().toLowerCase());
+}
+function familyOf(genre) {
+  const g = genre.trim().toLowerCase();
+  if (!g || JUNK.test(g)) return null;
+  for (const [pattern, family] of RULES) {
+    if (pattern.test(g)) return family;
+  }
+  return null;
+}
+function familiesOf(genres) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const g of genres) {
+    const f = familyOf(g);
+    if (f && !seen.has(f)) {
+      seen.add(f);
+      out.push(f);
+    }
+  }
+  return out;
+}
+
 // plugins/intelligent-shuffle/server/index.ts
 var HALF_LIFE_S = 4 * 3600;
 var FLOOR = 0.05;
 var DELTAS = {
-  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, era: 1.5 },
-  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, era: -2 }
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, style: 2, era: 1.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2 }
 };
 var HARD_NO = -3;
-var TEMPERATURE = 1.5;
+var TEMPERATURE = 1;
 var PER_ARTIST_CAP = 1;
 var GENRE_CLAMP = 4;
+var STYLE_CLAMP = 3;
+var ADJ_FACTOR = 0.35;
 var ERA_CLAMP = 3;
 var ESCALATE_WINDOW_S = 6 * 3600;
 var ESCALATE_STEP = 0.75;
@@ -16,7 +120,7 @@ var ESCALATE_MAX = 3;
 var WEIGHTS_DDL = `
   CREATE TABLE IF NOT EXISTS ishuffle_weights (
     user_id    INTEGER NOT NULL,
-    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','era')),
+    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','style','era')),
     key        TEXT    NOT NULL,
     -- What to call this weight on screen ("Deftones", "nu metal", "1990s") \u2014 stored at write
     -- time because the readable name is only cheaply known then.
@@ -38,7 +142,7 @@ var plugin = {
   migrate(db) {
     db.exec(WEIGHTS_DDL);
     const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ishuffle_weights'").get();
-    if (existing && !existing.sql.includes("'era'")) {
+    if (existing && !existing.sql.includes("'style'")) {
       db.exec(`
         ALTER TABLE ishuffle_weights RENAME TO ishuffle_weights_old;
         ${WEIGHTS_DDL}
@@ -88,7 +192,16 @@ var plugin = {
       }
       return out;
     };
-    const genresFor = (t, artistGenres) => t.genres ? t.genres.split(", ") : artistGenres.get(t.norm_artist) ?? [];
+    const genresFor = (t, artistGenres) => {
+      const own = t.genres ? t.genres.split(", ") : [];
+      const artist = artistGenres.get(t.norm_artist) ?? [];
+      const out = [];
+      for (const g of [...own, ...artist]) {
+        const n = g.trim().toLowerCase();
+        if (n && !isJunk(n) && !out.includes(n)) out.push(n);
+      }
+      return out.slice(0, 10);
+    };
     const bump = db.prepare(
       `INSERT INTO ishuffle_weights (user_id, kind, key, label, weight, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -101,7 +214,7 @@ var plugin = {
       bump.run(userId, kind, key, label, current + delta, now());
     };
     const mood = (userId) => {
-      const all = [...weights(userId).entries()].map(([k, v]) => ({ kind: k.split("|")[0], label: v.label || k.split("|")[1], weight: v.w })).filter((e) => Math.abs(e.weight) >= FLOOR);
+      const all = [...weights(userId).entries()].map(([k, v]) => ({ kind: k.split("|")[0], label: v.label || k.split("|")[1], weight: v.w })).filter((e) => e.kind !== "track" && Math.abs(e.weight) >= FLOOR);
       all.sort((a, b) => b.weight - a.weight);
       return {
         into: all.filter((e) => e.weight > 0).slice(0, 8),
@@ -133,9 +246,24 @@ var plugin = {
           -GENRE_CLAMP,
           Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0))
         );
+        const fams = familiesOf(gs);
+        let sw = 0;
+        const counted = /* @__PURE__ */ new Set();
+        for (const f of fams) {
+          sw += w.get(`style|${f}`)?.w ?? 0;
+          counted.add(f);
+        }
+        for (const f of fams) {
+          for (const adj of ADJACENT[f]) {
+            if (counted.has(adj)) continue;
+            counted.add(adj);
+            sw += ADJ_FACTOR * (w.get(`style|${adj}`)?.w ?? 0);
+          }
+        }
+        sw = Math.max(-STYLE_CLAMP, Math.min(STYLE_CLAMP, sw));
         const era = eraOf(t.year);
         const ew = era ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0)) : 0;
-        const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw + ew;
+        const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw + sw + ew;
         return { t, score };
       }).filter((e) => e.score > HARD_NO);
       const picked = [];
@@ -203,6 +331,8 @@ var plugin = {
       addWeight(c.id, "artist", t.norm_artist, t.artist_name, d.artist * artistShare);
       const gs = genresFor(t, genresOf([t.norm_artist])).slice(0, 6);
       for (const g of gs) addWeight(c.id, "genre", g, g, d.genre);
+      const fams = familiesOf(gs).slice(0, 3);
+      for (const f of fams) addWeight(c.id, "style", f, FAMILY_LABEL[f], d.style);
       const era = eraOf(t.year);
       if (era) addWeight(c.id, "era", era.key, era.label, d.era);
       db.prepare(

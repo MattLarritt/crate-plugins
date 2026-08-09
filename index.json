@@ -10,7 +10,7 @@
     {
       "id": "intelligent-shuffle",
       "name": "Intelligent Shuffle",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "description": "A dynamic DJ for your library: vote more or less like this while it plays, and the queue re-deals to the mood. Reads each track's own genres and era, and works out whether you mean the band or the vibe. Votes fade over hours, so it follows tonight, not last week.",
       "dir": "plugins/intelligent-shuffle/dist"
     }
