@@ -49,7 +49,7 @@ var ADJACENT = (() => {
   }
   return out;
 })();
-var JUNK = /^(?:seen live|american|british|english|irish|scottish|german|french|australian|canadian|usa|uk|america|états unidos|estados unidos|américain|france|\d{2,4}s?|(?:fe)?male vocals?(?:ists?)?|vocalist|guitarist|guitar|piano|actor|fictional|political|queer|compilation|special purpose artist|grammy winner|favou?rites?|awesome|good)$/;
+var JUNK = /^(?:seen live|american|british|english|irish|scottish|german|french|australian|canadian|usa|uk|america|états unidos|estados unidos|américain|france|\d{2,4}s?|(?:fe)?male vocals?(?:ists?)?|vocalist|guitarist|guitar|piano|actor|fictional|political|queer|compilation|special purpose artist|grammy winner|favou?rites?|awesome|good|songwriter|producer|instrumental)$/;
 var RULES = [
   [/metal|thrash|doom|rapcore|neue deutsche|^heavy$/, "metal"],
   [/industrial|^noise/, "industrial"],
@@ -58,7 +58,7 @@ var RULES = [
   [/punk|hardcore|easycore|\bemo\b|emocore|screamo/, "punk"],
   [/reggae|dancehall|\bska\b|dub\b/, "reggae"],
   [/indian|bollywood|latin|afrobeat|k-pop|j-pop|world/, "world"],
-  [/country|folk|americana|bluegrass|singer.?.?songwriter|songwriter|red dirt|nashville|heartland|acoustic/, "folk"],
+  [/country|folk|americana|bluegrass|singer.?.?songwriter|red dirt|nashville|heartland|acoustic/, "folk"],
   [
     /grunge|indie|alternative|\balt\b|alt\.|alternrock|shoegaze|dream pop|madchester|new wave|britpop|jangle|bedroom pop|art rock|art pop|experimental|post-rock|hypnagogic|slowcore|noise rock/,
     "alt"
