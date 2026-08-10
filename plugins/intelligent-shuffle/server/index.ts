@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { CratePlugin } from '../../../types/contract.js';
-import { ADJACENT, FAMILY_LABEL, familiesOf, isJunk, type Family } from './taxonomy.js';
+import { ADJACENT, FAMILY_LABEL, familiesOf, familyOf, isJunk, type Family } from './taxonomy.js';
 
 /**
  * Intelligent Shuffle: a dynamic DJ over the user's own library.
@@ -68,8 +68,8 @@ const FLOOR = 0.05;
  * a specific song is the one thing a vote names exactly.
  */
 const DELTAS = {
-  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, style: 2, era: 1.5 },
-  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2 },
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, style: 2, era: 1.5, energy: 1.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2, energy: -2 },
 } as const;
 
 /** A summed score below this means "the mood says no": excluded outright, not just unlikely. */
@@ -136,7 +136,22 @@ const ESCALATE_WINDOW_S = 6 * 3600;
 const ESCALATE_STEP = 0.75;
 const ESCALATE_MAX = 3;
 
-type Kind = 'artist' | 'album' | 'track' | 'genre' | 'style' | 'era';
+/**
+ * The most an energy-band weight may contribute. The lightest of the clamps: energy is a
+ * feel, not an identity — it nudges the mix toward loud or quiet, it never overrules what
+ * the music is.
+ */
+const ENERGY_CLAMP = 2.5;
+
+type Kind = 'artist' | 'album' | 'track' | 'genre' | 'style' | 'era' | 'energy';
+
+/** crate's shared energy vocabulary: <0.35 chill, <0.65 medium, else high. */
+const energyBandOf = (energy: number | null): 'chill' | 'medium' | 'high' | null => {
+  if (energy == null || energy < 0) return null;
+  if (energy < 0.35) return 'chill';
+  if (energy < 0.65) return 'medium';
+  return 'high';
+};
 
 interface LibRow {
   id: number;
@@ -149,6 +164,8 @@ interface LibRow {
   /** Comma-joined lowercase genres from the FILE's tags; '' when untagged or pre-column crate. */
   genres: string;
   year: number | null;
+  /** Analyzer's 0..1, or null when unanalysed / failed / pre-column crate. */
+  energy: number | null;
 }
 
 /**
@@ -158,7 +175,7 @@ interface LibRow {
 const WEIGHTS_DDL = `
   CREATE TABLE IF NOT EXISTS ishuffle_weights (
     user_id    INTEGER NOT NULL,
-    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','style','era')),
+    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','style','era','energy')),
     key        TEXT    NOT NULL,
     -- What to call this weight on screen ("Deftones", "nu metal", "1990s") — stored at write
     -- time because the readable name is only cheaply known then.
@@ -192,7 +209,7 @@ const plugin: CratePlugin = {
     const existing = db
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ishuffle_weights'")
       .get() as { sql: string } | undefined;
-    if (existing && !existing.sql.includes("'style'")) {
+    if (existing && !existing.sql.includes("'energy'")) {
       db.exec(`
         ALTER TABLE ishuffle_weights RENAME TO ishuffle_weights_old;
         ${WEIGHTS_DDL}
@@ -218,18 +235,22 @@ const plugin: CratePlugin = {
   routes(app, ctx) {
     const { db, need } = ctx;
 
-    // Track-level genres arrived in crate after this plugin did; a plugin must run on the
-    // crate it finds. Probed once at boot: absent column means every track reads '' and the
-    // artist fallback carries the whole load, which is exactly 1.2.0's behaviour.
-    const hasTrackGenres = (db.prepare('PRAGMA table_info(tracks)').all() as { name: string }[])
-      .some((c) => c.name === 'genres');
-    const genresCol = hasTrackGenres ? 't.genres' : "'' AS genres";
+    // Track-level genres and energy arrived in crate after this plugin did; a plugin must
+    // run on the crate it finds. Probed once at boot: an absent column reads as empty and
+    // that whole dimension simply sits out.
+    const trackCols = new Set(
+      (db.prepare('PRAGMA table_info(tracks)').all() as { name: string }[]).map((c) => c.name),
+    );
+    const genresCol = trackCols.has('genres') ? 't.genres' : "'' AS genres";
+    const energyCol = trackCols.has('energy')
+      ? 'CASE WHEN t.energy >= 0 THEN t.energy ELSE NULL END AS energy'
+      : 'NULL AS energy';
 
     const library = (userId: number): LibRow[] =>
       db
         .prepare(
           `SELECT t.id, t.title, t.artist_name, t.album_title, t.duration_s,
-                  t.norm_artist, t.norm_album, ${genresCol}, t.year
+                  t.norm_artist, t.norm_album, ${genresCol}, t.year, ${energyCol}
              FROM user_tracks ut JOIN tracks t ON t.id = ut.track_id
             WHERE ut.user_id = ?`,
         )
@@ -390,13 +411,18 @@ const plugin: CratePlugin = {
           const ew = era
             ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0))
             : 0;
+          const band = energyBandOf(t.energy);
+          const nw = band
+            ? Math.max(-ENERGY_CLAMP, Math.min(ENERGY_CLAMP, w.get(`energy|${band}`)?.w ?? 0))
+            : 0;
           const score =
             (w.get(`track|${String(t.id)}`)?.w ?? 0) +
             (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) +
             (w.get(`artist|${t.norm_artist}`)?.w ?? 0) +
             gw +
             sw +
-            ew;
+            ew +
+            nw;
           return { t, score };
         })
         .filter((e) => e.score > HARD_NO);
@@ -464,7 +490,7 @@ const plugin: CratePlugin = {
 
       const t = db
         .prepare(
-          `SELECT id, title, artist_name, album_title, norm_artist, norm_album, ${genresCol}, year
+          `SELECT id, title, artist_name, album_title, norm_artist, norm_album, ${genresCol}, year, ${energyCol}
              FROM tracks t WHERE id = ?`,
         )
         .get(trackId) as LibRow | undefined;
@@ -494,6 +520,8 @@ const plugin: CratePlugin = {
       for (const f of fams) addWeight(c.id, 'style', f, FAMILY_LABEL[f], d.style);
       const era = eraOf(t.year);
       if (era) addWeight(c.id, 'era', era.key, era.label, d.era);
+      const band = energyBandOf(t.energy);
+      if (band) addWeight(c.id, 'energy', band, `${band} energy`, d.energy);
 
       db.prepare(
         'INSERT INTO ishuffle_votes (user_id, track_id, norm_artist, direction, at) VALUES (?, ?, ?, ?, ?)',
@@ -508,7 +536,13 @@ const plugin: CratePlugin = {
 
       return {
         ok: true,
-        applied: { artist: t.artist_name, album: t.album_title, genres: gs, era: era?.label ?? null },
+        applied: {
+          artist: t.artist_name,
+          album: t.album_title,
+          genres: gs,
+          era: era?.label ?? null,
+          energy: band,
+        },
         mood: mood(c.id),
       };
     });
@@ -518,6 +552,190 @@ const plugin: CratePlugin = {
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
       return { mood: mood(c.id) };
+    });
+
+    /**
+     * Freeze the mood as a DYNAMIC PLAYLIST.
+     *
+     * The decayed weights become the playlist's recipe verbatim (crate's dynamicpl rules
+     * shape), so the playlist deals the way the DJ was dealing at this moment — but
+     * frozen: the mood keeps decaying, the playlist does not. Track and album weights
+     * stay out of the recipe for the same reason they stay off the mood chips: a recipe
+     * is a vibe, not a setlist.
+     */
+    app.post('/api/ishuffle/save-playlist', async (req, reply) => {
+      const c = need(req, reply);
+      if (!c) return;
+      if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
+      const requestedName = String((req.body as { name?: string } | undefined)?.name ?? '').trim();
+
+      const terms = [...weights(c.id).entries()]
+        .map(([k, v]) => {
+          const [kind, ...keyParts] = k.split('|');
+          return { kind: kind as Kind, key: keyParts.join('|'), weight: v.w, label: v.label };
+        })
+        .filter((t) => t.kind !== 'track' && t.kind !== 'album' && Math.abs(t.weight) >= FLOOR)
+        .sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight))
+        .slice(0, 30)
+        .map((t) => ({
+          kind: t.kind,
+          key: t.key,
+          weight: Math.round(t.weight * 100) / 100,
+          label: t.label || t.key,
+        }));
+      if (!terms.length) {
+        return reply.code(400).send({ error: 'the mood is empty — vote on a few songs first' });
+      }
+
+      /*
+       * Named after what it leans into, unless the caller chose: "metal · 1990s · high
+       * energy". Labels are deduped — a genre and its family are often the same word
+       * ("rock" and "rock"), and "rock · electronic · rock" is not a name.
+       */
+      const nameParts: string[] = [];
+      for (const t of terms) {
+        if (t.weight <= 0) continue;
+        const label = t.label.toLowerCase();
+        if (nameParts.some((p) => p.toLowerCase() === label)) continue;
+        nameParts.push(t.label);
+        if (nameParts.length === 3) break;
+      }
+      const name = requestedName || nameParts.join(' · ') || 'DJ mood';
+      const rules = JSON.stringify({ v: 1, terms, limit: 50 });
+      const id = ctx.userlib.createPlaylist(c.id, name.slice(0, 120), rules);
+      ctx.userlib.setPlaylistDescription(id, 'Saved from an Intelligent Shuffle mood — deals fresh songs every time.');
+      return { ok: true, id, name };
+    });
+
+    /**
+     * Talk to the DJ: free text in, weight deltas out.
+     *
+     * "90s and heavier, no ballads" is a mood statement, and the model's only job is
+     * translating it into the SAME vocabulary votes use — genres the library actually
+     * contains, families, decades, energy bands, artists. The deltas are clamped and go
+     * through addWeight like any vote; the model steers nothing directly. No key
+     * configured degrades to an honest 503. Votes remain the steering wheel; this is
+     * the megaphone.
+     */
+    app.post('/api/ishuffle/say', async (req, reply) => {
+      const c = need(req, reply);
+      if (!c) return;
+      if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
+      const text = String((req.body as { text?: string } | undefined)?.text ?? '').trim();
+      if (text.length < 2) return reply.code(400).send({ error: 'say something' });
+      if (text.length > 300) return reply.code(400).send({ error: 'keep it under 300 characters' });
+
+      const keyRow = db.prepare("SELECT value FROM settings WHERE key = 'openaiKey'").get() as
+        | { value: string }
+        | undefined;
+      if (!keyRow?.value) {
+        return reply.code(503).send({ error: 'no OpenAI key configured (Admin → Settings)' });
+      }
+
+      // The vocabulary the model may use: what this library actually contains.
+      const genreCounts = new Map<string, number>();
+      for (const r of db.prepare("SELECT genres FROM tracks WHERE genres != ''").all() as { genres: string }[]) {
+        for (const g of r.genres.split(', ')) genreCounts.set(g, (genreCounts.get(g) ?? 0) + 1);
+      }
+      const genreVocab = [...genreCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([g]) => g);
+      const familyVocab = Object.keys(FAMILY_LABEL);
+      const eras = (db
+        .prepare('SELECT DISTINCT (year/10)*10 AS d FROM tracks WHERE year >= 1900 ORDER BY d')
+        .all() as { d: number }[]).map((r) => String(r.d));
+
+      let parsed: {
+        genres?: Record<string, number>;
+        styles?: Record<string, number>;
+        eras?: Record<string, number>;
+        energy?: Record<string, number>;
+        artists?: Record<string, number>;
+        summary?: string;
+      };
+      try {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${keyRow.value}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gpt-4.1-mini',
+            temperature: 0,
+            response_format: { type: 'json_object' },
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You steer a music DJ by translating a listener\'s words into weight deltas ' +
+                  '(-3 to +3; positive = more of it, negative = less). Use ONLY these vocabularies. ' +
+                  `genres: ${genreVocab.join(', ')}. styles: ${familyVocab.join(', ')}. ` +
+                  `eras (decades): ${eras.join(', ')}. energy: chill, medium, high. ` +
+                  'artists: any artist name the listener mentions, lowercase. ' +
+                  'Reply with JSON only: {"genres":{},"styles":{},"eras":{},"energy":{},"artists":{},' +
+                  '"summary":"<under 10 words, what you did>"} — omit empty maps.',
+              },
+              { role: 'user', content: text },
+            ],
+          }),
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (!res.ok) throw new Error(`openai ${res.status}`);
+        const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+        parsed = JSON.parse(body.choices?.[0]?.message?.content ?? '{}');
+      } catch (err) {
+        ctx.log.warn(`ishuffle say failed: ${err instanceof Error ? err.message : String(err)}`);
+        return reply.code(502).send({ error: "the DJ didn't catch that — try again" });
+      }
+
+      const clampDelta = (n: unknown) => Math.max(-3, Math.min(3, Number(n) || 0));
+      let applied = 0;
+      /*
+       * A named genre also moves its FAMILY, at the same reduced ratio a vote uses
+       * (style delta 2 against genre 2.5). Without this, "more metal" would light only
+       * tracks tagged the exact word while alt metal next door stayed dark — the very
+       * sparseness families were introduced to fix. Words and votes write the same
+       * shape of weight, so the two can never disagree.
+       */
+      const familyBump = new Map<Family, number>();
+      for (const [g, d] of Object.entries(parsed.genres ?? {})) {
+        const delta = clampDelta(d);
+        if (!delta) continue;
+        const key = g.toLowerCase();
+        addWeight(c.id, 'genre', key, key, delta);
+        applied++;
+        const fam = familyOf(key);
+        if (fam) {
+          const ratio = 0.8; // 2 / 2.5, the vote's own style:genre ratio
+          familyBump.set(fam, (familyBump.get(fam) ?? 0) + delta * ratio);
+        }
+      }
+      for (const [fam, delta] of familyBump) {
+        addWeight(c.id, 'style', fam, FAMILY_LABEL[fam], Math.max(-3, Math.min(3, delta)));
+      }
+      for (const [f, d] of Object.entries(parsed.styles ?? {})) {
+        const fam = f.toLowerCase() as Family;
+        const delta = clampDelta(d);
+        if (delta && fam in FAMILY_LABEL) { addWeight(c.id, 'style', fam, FAMILY_LABEL[fam], delta); applied++; }
+      }
+      for (const [e, d] of Object.entries(parsed.eras ?? {})) {
+        const delta = clampDelta(d);
+        const decade = String(parseInt(e, 10));
+        if (delta && /^\d{4}$/.test(decade)) { addWeight(c.id, 'era', decade, `${decade}s`, delta); applied++; }
+      }
+      for (const [band, d] of Object.entries(parsed.energy ?? {})) {
+        const delta = clampDelta(d);
+        const b = band.toLowerCase();
+        if (delta && ['chill', 'medium', 'high'].includes(b)) {
+          addWeight(c.id, 'energy', b, `${b} energy`, delta);
+          applied++;
+        }
+      }
+      for (const [artist, d] of Object.entries(parsed.artists ?? {})) {
+        const delta = clampDelta(d);
+        if (delta) { addWeight(c.id, 'artist', artist.toLowerCase(), artist, delta); applied++; }
+      }
+      if (!applied) {
+        return reply.code(422).send({ error: "the DJ couldn't map that onto your library" });
+      }
+
+      return { ok: true, summary: String(parsed.summary ?? 'noted').slice(0, 80), mood: mood(c.id) };
     });
 
     /** A fresh mind: wipe the mood entirely. The DJ forgets, the library does not. */

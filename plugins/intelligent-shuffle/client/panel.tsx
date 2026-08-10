@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { usePlayer } from 'crate/player';
 import type { PanelProps } from '../../../types/contract';
-import { moodNow, plan, resetMood, vote, type Mood } from './api';
+import { moodNow, plan, resetMood, saveMoodPlaylist, sayToDj, vote, type Mood } from './api';
 import { getVersion, isActive, playedIds, startSession, stopSession, subscribe } from './session';
 
 /**
@@ -28,6 +28,7 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
   useSyncExternalStore(subscribe, getVersion);
   const [mood, setMood] = useState<Mood | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saying, setSaying] = useState('');
   const active = isActive();
 
   useEffect(() => {
@@ -50,8 +51,13 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
     void vote(trackId, direction)
       .then(async (r) => {
         setMood(r.mood);
-        // Artist, a genre or two, and the decade: the vote's whole reach in one line.
-        const what = [r.applied.artist, ...r.applied.genres.slice(0, 2), ...(r.applied.era ? [r.applied.era] : [])].join(', ');
+        // Artist, a genre or two, the decade and the energy: the vote's reach in one line.
+        const what = [
+          r.applied.artist,
+          ...r.applied.genres.slice(0, 2),
+          ...(r.applied.era ? [r.applied.era] : []),
+          ...(r.applied.energy ? [`${r.applied.energy} energy`] : []),
+        ].join(', ');
         say('good', direction === 'more' ? `More like: ${what}` : `Less like: ${what}`);
         // YES keeps the queue; NO re-deals it. One rule each — see the note above.
         if (direction === 'less') await redeal();
@@ -189,20 +195,66 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
                   ))}
                 </div>
               )}
-              <button
-                className="btn sec sm"
-                disabled={busy}
-                onClick={() => {
-                  void resetMood().then(() => {
-                    setMood({ into: [], outOf: [] });
-                    say('good', 'Mood cleared — open mind');
-                  });
-                }}
-              >
-                Forget the mood
-              </button>
+              <div className="isactions">
+                <button
+                  className="btn sec sm"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true);
+                    void saveMoodPlaylist()
+                      .then((r) => say('good', `Saved "${r.name}" — it keeps dealing this vibe`))
+                      .catch((e: Error) => say('bad', e.message))
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  Save as playlist
+                </button>
+                <button
+                  className="btn sec sm"
+                  disabled={busy}
+                  onClick={() => {
+                    void resetMood().then(() => {
+                      setMood({ into: [], outOf: [] });
+                      say('good', 'Mood cleared — open mind');
+                    });
+                  }}
+                >
+                  Forget the mood
+                </button>
+              </div>
             </div>
           )}
+
+          {/* Talk to the DJ: the megaphone next to the steering wheel. Words become the
+              same weights a vote writes, so the two never disagree. */}
+          <form
+            className="issay"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const text = saying.trim();
+              if (!text || busy) return;
+              setBusy(true);
+              void sayToDj(text)
+                .then((r) => {
+                  setMood(r.mood);
+                  setSaying('');
+                  say('good', r.summary);
+                })
+                .catch((e2: Error) => say('bad', e2.message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            <input
+              value={saying}
+              onChange={(e) => setSaying(e.target.value)}
+              placeholder="Tell the DJ: “90s and heavier, no ballads”"
+              maxLength={300}
+              disabled={busy}
+            />
+            <button className="btn sec sm" disabled={busy || !saying.trim()}>
+              Say
+            </button>
+          </form>
         </div>
       )}
     </div>

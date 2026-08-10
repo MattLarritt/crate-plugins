@@ -31,6 +31,8 @@ var plan = (count, exclude, afterTrackId) => post("/api/ishuffle/plan", { count,
 var vote = (trackId, direction) => post("/api/ishuffle/vote", { trackId, direction });
 var moodNow = () => get("/api/ishuffle/mood");
 var resetMood = () => post("/api/ishuffle/reset", {});
+var saveMoodPlaylist = (name) => post("/api/ishuffle/save-playlist", { name });
+var sayToDj = (text) => post("/api/ishuffle/say", { text });
 
 // plugins/intelligent-shuffle/client/session.ts
 var active = false;
@@ -87,6 +89,7 @@ function IntelligentShufflePanel({ onClose, say }) {
   useSyncExternalStore(subscribe, getVersion);
   const [mood, setMood] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [saying, setSaying] = useState("");
   const active2 = isActive();
   useEffect(() => {
     void moodNow().then((r) => setMood(r.mood)).catch(() => setMood(null));
@@ -101,7 +104,12 @@ function IntelligentShufflePanel({ onClose, say }) {
     setBusy(true);
     void vote(trackId, direction).then(async (r) => {
       setMood(r.mood);
-      const what = [r.applied.artist, ...r.applied.genres.slice(0, 2), ...r.applied.era ? [r.applied.era] : []].join(", ");
+      const what = [
+        r.applied.artist,
+        ...r.applied.genres.slice(0, 2),
+        ...r.applied.era ? [r.applied.era] : [],
+        ...r.applied.energy ? [`${r.applied.energy} energy`] : []
+      ].join(", ");
       say("good", direction === "more" ? `More like: ${what}` : `Less like: ${what}`);
       if (direction === "less") await redeal();
     }).catch((e) => say("bad", e.message)).finally(() => setBusy(false));
@@ -199,21 +207,65 @@ function IntelligentShufflePanel({ onClose, say }) {
           /* @__PURE__ */ jsx("span", { className: "k muted", children: "Steering away" }),
           mood.outOf.map((e) => /* @__PURE__ */ jsx("span", { className: "ischip out", children: e.label }, `${e.kind}:${e.label}`))
         ] }),
-        /* @__PURE__ */ jsx(
-          "button",
-          {
-            className: "btn sec sm",
-            disabled: busy,
-            onClick: () => {
-              void resetMood().then(() => {
-                setMood({ into: [], outOf: [] });
-                say("good", "Mood cleared \u2014 open mind");
-              });
-            },
-            children: "Forget the mood"
-          }
-        )
-      ] })
+        /* @__PURE__ */ jsxs("div", { className: "isactions", children: [
+          /* @__PURE__ */ jsx(
+            "button",
+            {
+              className: "btn sec sm",
+              disabled: busy,
+              onClick: () => {
+                setBusy(true);
+                void saveMoodPlaylist().then((r) => say("good", `Saved "${r.name}" \u2014 it keeps dealing this vibe`)).catch((e) => say("bad", e.message)).finally(() => setBusy(false));
+              },
+              children: "Save as playlist"
+            }
+          ),
+          /* @__PURE__ */ jsx(
+            "button",
+            {
+              className: "btn sec sm",
+              disabled: busy,
+              onClick: () => {
+                void resetMood().then(() => {
+                  setMood({ into: [], outOf: [] });
+                  say("good", "Mood cleared \u2014 open mind");
+                });
+              },
+              children: "Forget the mood"
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxs(
+        "form",
+        {
+          className: "issay",
+          onSubmit: (e) => {
+            e.preventDefault();
+            const text = saying.trim();
+            if (!text || busy) return;
+            setBusy(true);
+            void sayToDj(text).then((r) => {
+              setMood(r.mood);
+              setSaying("");
+              say("good", r.summary);
+            }).catch((e2) => say("bad", e2.message)).finally(() => setBusy(false));
+          },
+          children: [
+            /* @__PURE__ */ jsx(
+              "input",
+              {
+                value: saying,
+                onChange: (e) => setSaying(e.target.value),
+                placeholder: "Tell the DJ: \u201C90s and heavier, no ballads\u201D",
+                maxLength: 300,
+                disabled: busy
+              }
+            ),
+            /* @__PURE__ */ jsx("button", { className: "btn sec sm", disabled: busy || !saying.trim(), children: "Say" })
+          ]
+        }
+      )
     ] })
   ] });
 }

@@ -35,6 +35,13 @@ export interface PluginContext {
   /** Track existence and ownership checks. Matches crate's UserLibrary surface a plugin may use. */
   userlib: {
     byId(id: number): { trackId: number; title: string; artistName: string; albumTitle: string } | null;
+    /**
+     * Create a playlist for a user. A `rules` JSON string (core's lib/dynamicpl.ts shape)
+     * makes it DYNAMIC — it deals fresh tracks from the recipe on every open. This is how
+     * the DJ's "save mood as playlist" works.
+     */
+    createPlaylist(userId: number, name: string, rules?: string | null): number;
+    setPlaylistDescription(playlistId: number, description: string): void;
   };
   log: FastifyBaseLogger;
   /** The session guard: has already replied 401 when it returns null. */

@@ -104,8 +104,8 @@ function familiesOf(genres) {
 var HALF_LIFE_S = 4 * 3600;
 var FLOOR = 0.05;
 var DELTAS = {
-  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, style: 2, era: 1.5 },
-  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2 }
+  more: { track: 2.5, album: 1, artist: 1, genre: 2.5, style: 2, era: 1.5, energy: 1.5 },
+  less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2, energy: -2 }
 };
 var HARD_NO = -3;
 var TEMPERATURE = 0.85;
@@ -117,10 +117,17 @@ var ERA_CLAMP = 3;
 var ESCALATE_WINDOW_S = 6 * 3600;
 var ESCALATE_STEP = 0.75;
 var ESCALATE_MAX = 3;
+var ENERGY_CLAMP = 2.5;
+var energyBandOf = (energy) => {
+  if (energy == null || energy < 0) return null;
+  if (energy < 0.35) return "chill";
+  if (energy < 0.65) return "medium";
+  return "high";
+};
 var WEIGHTS_DDL = `
   CREATE TABLE IF NOT EXISTS ishuffle_weights (
     user_id    INTEGER NOT NULL,
-    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','style','era')),
+    kind       TEXT    NOT NULL CHECK (kind IN ('artist','album','track','genre','style','era','energy')),
     key        TEXT    NOT NULL,
     -- What to call this weight on screen ("Deftones", "nu metal", "1990s") \u2014 stored at write
     -- time because the readable name is only cheaply known then.
@@ -142,7 +149,7 @@ var plugin = {
   migrate(db) {
     db.exec(WEIGHTS_DDL);
     const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ishuffle_weights'").get();
-    if (existing && !existing.sql.includes("'style'")) {
+    if (existing && !existing.sql.includes("'energy'")) {
       db.exec(`
         ALTER TABLE ishuffle_weights RENAME TO ishuffle_weights_old;
         ${WEIGHTS_DDL}
@@ -166,11 +173,14 @@ var plugin = {
   },
   routes(app, ctx) {
     const { db, need } = ctx;
-    const hasTrackGenres = db.prepare("PRAGMA table_info(tracks)").all().some((c) => c.name === "genres");
-    const genresCol = hasTrackGenres ? "t.genres" : "'' AS genres";
+    const trackCols = new Set(
+      db.prepare("PRAGMA table_info(tracks)").all().map((c) => c.name)
+    );
+    const genresCol = trackCols.has("genres") ? "t.genres" : "'' AS genres";
+    const energyCol = trackCols.has("energy") ? "CASE WHEN t.energy >= 0 THEN t.energy ELSE NULL END AS energy" : "NULL AS energy";
     const library = (userId) => db.prepare(
       `SELECT t.id, t.title, t.artist_name, t.album_title, t.duration_s,
-                  t.norm_artist, t.norm_album, ${genresCol}, t.year
+                  t.norm_artist, t.norm_album, ${genresCol}, t.year, ${energyCol}
              FROM user_tracks ut JOIN tracks t ON t.id = ut.track_id
             WHERE ut.user_id = ?`
     ).all(userId);
@@ -263,7 +273,9 @@ var plugin = {
         sw = Math.max(-STYLE_CLAMP, Math.min(STYLE_CLAMP, sw));
         const era = eraOf(t.year);
         const ew = era ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0)) : 0;
-        const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw + sw + ew;
+        const band = energyBandOf(t.energy);
+        const nw = band ? Math.max(-ENERGY_CLAMP, Math.min(ENERGY_CLAMP, w.get(`energy|${band}`)?.w ?? 0)) : 0;
+        const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw + sw + ew + nw;
         return { t, score };
       }).filter((e) => e.score > HARD_NO);
       const picked = [];
@@ -316,7 +328,7 @@ var plugin = {
       const direction = b.direction === "less" ? "less" : b.direction === "more" ? "more" : null;
       if (!direction) return reply.code(400).send({ error: "direction must be 'more' or 'less'" });
       const t = db.prepare(
-        `SELECT id, title, artist_name, album_title, norm_artist, norm_album, ${genresCol}, year
+        `SELECT id, title, artist_name, album_title, norm_artist, norm_album, ${genresCol}, year, ${energyCol}
              FROM tracks t WHERE id = ?`
       ).get(trackId);
       if (!t) return reply.code(404).send({ error: "no such track" });
@@ -335,6 +347,8 @@ var plugin = {
       for (const f of fams) addWeight(c.id, "style", f, FAMILY_LABEL[f], d.style);
       const era = eraOf(t.year);
       if (era) addWeight(c.id, "era", era.key, era.label, d.era);
+      const band = energyBandOf(t.energy);
+      if (band) addWeight(c.id, "energy", band, `${band} energy`, d.energy);
       db.prepare(
         "INSERT INTO ishuffle_votes (user_id, track_id, norm_artist, direction, at) VALUES (?, ?, ?, ?, ?)"
       ).run(c.id, t.id, t.norm_artist, direction, now());
@@ -344,7 +358,13 @@ var plugin = {
       db.prepare("DELETE FROM ishuffle_votes WHERE at < ?").run(now() - ESCALATE_WINDOW_S);
       return {
         ok: true,
-        applied: { artist: t.artist_name, album: t.album_title, genres: gs, era: era?.label ?? null },
+        applied: {
+          artist: t.artist_name,
+          album: t.album_title,
+          genres: gs,
+          era: era?.label ?? null,
+          energy: band
+        },
         mood: mood(c.id)
       };
     });
@@ -353,6 +373,135 @@ var plugin = {
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: "a token caller has no library" });
       return { mood: mood(c.id) };
+    });
+    app.post("/api/ishuffle/save-playlist", async (req, reply) => {
+      const c = need(req, reply);
+      if (!c) return;
+      if (!c.id) return reply.code(400).send({ error: "a token caller has no library" });
+      const requestedName = String(req.body?.name ?? "").trim();
+      const terms = [...weights(c.id).entries()].map(([k, v]) => {
+        const [kind, ...keyParts] = k.split("|");
+        return { kind, key: keyParts.join("|"), weight: v.w, label: v.label };
+      }).filter((t) => t.kind !== "track" && t.kind !== "album" && Math.abs(t.weight) >= FLOOR).sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight)).slice(0, 30).map((t) => ({
+        kind: t.kind,
+        key: t.key,
+        weight: Math.round(t.weight * 100) / 100,
+        label: t.label || t.key
+      }));
+      if (!terms.length) {
+        return reply.code(400).send({ error: "the mood is empty \u2014 vote on a few songs first" });
+      }
+      const nameParts = [];
+      for (const t of terms) {
+        if (t.weight <= 0) continue;
+        const label = t.label.toLowerCase();
+        if (nameParts.some((p) => p.toLowerCase() === label)) continue;
+        nameParts.push(t.label);
+        if (nameParts.length === 3) break;
+      }
+      const name = requestedName || nameParts.join(" \xB7 ") || "DJ mood";
+      const rules = JSON.stringify({ v: 1, terms, limit: 50 });
+      const id = ctx.userlib.createPlaylist(c.id, name.slice(0, 120), rules);
+      ctx.userlib.setPlaylistDescription(id, "Saved from an Intelligent Shuffle mood \u2014 deals fresh songs every time.");
+      return { ok: true, id, name };
+    });
+    app.post("/api/ishuffle/say", async (req, reply) => {
+      const c = need(req, reply);
+      if (!c) return;
+      if (!c.id) return reply.code(400).send({ error: "a token caller has no library" });
+      const text = String(req.body?.text ?? "").trim();
+      if (text.length < 2) return reply.code(400).send({ error: "say something" });
+      if (text.length > 300) return reply.code(400).send({ error: "keep it under 300 characters" });
+      const keyRow = db.prepare("SELECT value FROM settings WHERE key = 'openaiKey'").get();
+      if (!keyRow?.value) {
+        return reply.code(503).send({ error: "no OpenAI key configured (Admin \u2192 Settings)" });
+      }
+      const genreCounts = /* @__PURE__ */ new Map();
+      for (const r of db.prepare("SELECT genres FROM tracks WHERE genres != ''").all()) {
+        for (const g of r.genres.split(", ")) genreCounts.set(g, (genreCounts.get(g) ?? 0) + 1);
+      }
+      const genreVocab = [...genreCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([g]) => g);
+      const familyVocab = Object.keys(FAMILY_LABEL);
+      const eras = db.prepare("SELECT DISTINCT (year/10)*10 AS d FROM tracks WHERE year >= 1900 ORDER BY d").all().map((r) => String(r.d));
+      let parsed;
+      try {
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${keyRow.value}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-4.1-mini",
+            temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content: `You steer a music DJ by translating a listener's words into weight deltas (-3 to +3; positive = more of it, negative = less). Use ONLY these vocabularies. genres: ${genreVocab.join(", ")}. styles: ${familyVocab.join(", ")}. eras (decades): ${eras.join(", ")}. energy: chill, medium, high. artists: any artist name the listener mentions, lowercase. Reply with JSON only: {"genres":{},"styles":{},"eras":{},"energy":{},"artists":{},"summary":"<under 10 words, what you did>"} \u2014 omit empty maps.`
+              },
+              { role: "user", content: text }
+            ]
+          }),
+          signal: AbortSignal.timeout(2e4)
+        });
+        if (!res.ok) throw new Error(`openai ${res.status}`);
+        const body = await res.json();
+        parsed = JSON.parse(body.choices?.[0]?.message?.content ?? "{}");
+      } catch (err) {
+        ctx.log.warn(`ishuffle say failed: ${err instanceof Error ? err.message : String(err)}`);
+        return reply.code(502).send({ error: "the DJ didn't catch that \u2014 try again" });
+      }
+      const clampDelta = (n) => Math.max(-3, Math.min(3, Number(n) || 0));
+      let applied = 0;
+      const familyBump = /* @__PURE__ */ new Map();
+      for (const [g, d] of Object.entries(parsed.genres ?? {})) {
+        const delta = clampDelta(d);
+        if (!delta) continue;
+        const key = g.toLowerCase();
+        addWeight(c.id, "genre", key, key, delta);
+        applied++;
+        const fam = familyOf(key);
+        if (fam) {
+          const ratio = 0.8;
+          familyBump.set(fam, (familyBump.get(fam) ?? 0) + delta * ratio);
+        }
+      }
+      for (const [fam, delta] of familyBump) {
+        addWeight(c.id, "style", fam, FAMILY_LABEL[fam], Math.max(-3, Math.min(3, delta)));
+      }
+      for (const [f, d] of Object.entries(parsed.styles ?? {})) {
+        const fam = f.toLowerCase();
+        const delta = clampDelta(d);
+        if (delta && fam in FAMILY_LABEL) {
+          addWeight(c.id, "style", fam, FAMILY_LABEL[fam], delta);
+          applied++;
+        }
+      }
+      for (const [e, d] of Object.entries(parsed.eras ?? {})) {
+        const delta = clampDelta(d);
+        const decade = String(parseInt(e, 10));
+        if (delta && /^\d{4}$/.test(decade)) {
+          addWeight(c.id, "era", decade, `${decade}s`, delta);
+          applied++;
+        }
+      }
+      for (const [band, d] of Object.entries(parsed.energy ?? {})) {
+        const delta = clampDelta(d);
+        const b = band.toLowerCase();
+        if (delta && ["chill", "medium", "high"].includes(b)) {
+          addWeight(c.id, "energy", b, `${b} energy`, delta);
+          applied++;
+        }
+      }
+      for (const [artist, d] of Object.entries(parsed.artists ?? {})) {
+        const delta = clampDelta(d);
+        if (delta) {
+          addWeight(c.id, "artist", artist.toLowerCase(), artist, delta);
+          applied++;
+        }
+      }
+      if (!applied) {
+        return reply.code(422).send({ error: "the DJ couldn't map that onto your library" });
+      }
+      return { ok: true, summary: String(parsed.summary ?? "noted").slice(0, 80), mood: mood(c.id) };
     });
     app.post("/api/ishuffle/reset", async (req, reply) => {
       const c = need(req, reply);

@@ -124,3 +124,11 @@
   background: color-mix(in srgb, var(--err) 9%, transparent);
 }
 .ismood .btn { align-self: flex-start; margin-top: 2px; }
+
+/* Save-as-playlist and Forget, side by side under the mood chips. */
+.ispanel .isactions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Talk to the DJ. Full width, because a sentence needs room — and on a phone this is
+   the one control that is easier than two thumbs on tiny buttons. */
+.ispanel .issay { display: flex; gap: 8px; margin-top: 12px; }
+.ispanel .issay input { flex: 1; min-width: 0; }
