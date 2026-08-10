@@ -129,6 +129,70 @@ export function parseChordName(name: string): ParsedChord | null {
   return { root, quality, bass };
 }
 
+/*
+ * Note spellings for writing a root back out, in both directions.
+ *
+ * Which one to use is a real musical question, not a formatting preference: the key of Eb
+ * is spelled with flats and the key of E with sharps, and "D#" in a flat key reads as a
+ * mistake to anyone playing from it. transposeChordName picks per target key below.
+ */
+const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+/** Keys conventionally written with flats, as semitones from C. F, Bb, Eb, Ab, Db, Gb. */
+const FLAT_KEYS = new Set([5, 10, 3, 8, 1, 6]);
+
+/** Semitone → note name, spelled for the key the music is now in. */
+export function noteName(semitone: number, preferFlats: boolean): string {
+  const i = ((semitone % 12) + 12) % 12;
+  return (preferFlats ? FLAT_NAMES : SHARP_NAMES)[i]!;
+}
+
+/**
+ * Move one chord name by a number of semitones, keeping everything that is not the root.
+ *
+ * The quality is carried through VERBATIM rather than through the alias table: the sheet
+ * said "Cmin7" and the player should still read "min7" a tone up, because rewriting their
+ * sheet into a house dialect is not transposing it. Slash basses move too — a G/B is a
+ * different chord from a G, and leaving the bass behind would silently change it.
+ *
+ * `preferFlats` normally follows the transposed KEY (the first chord of the sheet), which is
+ * why the caller passes it in rather than each chord deciding for itself.
+ */
+export function transposeChordName(name: string, semitones: number, preferFlats: boolean): string {
+  if (semitones === 0) return name;
+  const m = /^([A-G](?:#|b)?)(.*)$/.exec(name.trim());
+  if (!m) return name;
+  const root = NOTE[m[1]!];
+  if (root === undefined) return name;
+
+  let rest = m[2] ?? '';
+  let bassOut = '';
+  const slash = rest.indexOf('/');
+  if (slash !== -1) {
+    const bassText = rest.slice(slash + 1).trim();
+    const bass = NOTE[bassText];
+    // An unrecognised bass ("G/add9" and other oddities) is left exactly as written.
+    bassOut = bass === undefined ? `/${bassText}` : `/${noteName(bass + semitones, preferFlats)}`;
+    rest = rest.slice(0, slash);
+  }
+  return noteName(root + semitones, preferFlats) + rest + bassOut;
+}
+
+/**
+ * Should the transposed sheet be written with flats?
+ *
+ * Decided once for the whole sheet from its FIRST chord — the nearest thing a chord sheet
+ * has to a stated key — so a song never mixes D# and Eb between two lines.
+ */
+export function preferFlatsFor(firstChord: string | undefined, semitones: number): boolean {
+  if (!firstChord) return false;
+  const m = /^([A-G](?:#|b)?)/.exec(firstChord.trim());
+  const root = m ? NOTE[m[1]!] : undefined;
+  if (root === undefined) return false;
+  return FLAT_KEYS.has(((root + semitones) % 12 + 12) % 12);
+}
+
 /**
  * Open-position voicings, written out.
  *

@@ -97,6 +97,37 @@ function parseChordName(name) {
   const quality = ALIAS[written] ?? ALIAS[written.toLowerCase()] ?? written;
   return { root, quality, bass };
 }
+var SHARP_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+var FLAT_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+var FLAT_KEYS = /* @__PURE__ */ new Set([5, 10, 3, 8, 1, 6]);
+function noteName(semitone, preferFlats) {
+  const i = (semitone % 12 + 12) % 12;
+  return (preferFlats ? FLAT_NAMES : SHARP_NAMES)[i];
+}
+function transposeChordName(name, semitones, preferFlats) {
+  if (semitones === 0) return name;
+  const m = /^([A-G](?:#|b)?)(.*)$/.exec(name.trim());
+  if (!m) return name;
+  const root = NOTE[m[1]];
+  if (root === void 0) return name;
+  let rest = m[2] ?? "";
+  let bassOut = "";
+  const slash = rest.indexOf("/");
+  if (slash !== -1) {
+    const bassText = rest.slice(slash + 1).trim();
+    const bass = NOTE[bassText];
+    bassOut = bass === void 0 ? `/${bassText}` : `/${noteName(bass + semitones, preferFlats)}`;
+    rest = rest.slice(0, slash);
+  }
+  return noteName(root + semitones, preferFlats) + rest + bassOut;
+}
+function preferFlatsFor(firstChord, semitones) {
+  if (!firstChord) return false;
+  const m = /^([A-G](?:#|b)?)/.exec(firstChord.trim());
+  const root = m ? NOTE[m[1]] : void 0;
+  if (root === void 0) return false;
+  return FLAT_KEYS.has(((root + semitones) % 12 + 12) % 12);
+}
 var OPEN = {
   C: { frets: [-1, 3, 2, 0, 1, 0], fingers: [0, 3, 2, 0, 1, 0] },
   Cmaj7: { frets: [-1, 3, 2, 0, 0, 0], fingers: [0, 3, 2, 0, 0, 0] },
@@ -314,6 +345,32 @@ function writePrefs(p) {
   } catch {
   }
 }
+var SHIFT_KEY = "crate.chords.shift";
+function readShift(trackId) {
+  try {
+    const raw = localStorage.getItem(SHIFT_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    const n = Number(map[String(trackId)]) || 0;
+    return Math.min(11, Math.max(-11, n));
+  } catch {
+    return 0;
+  }
+}
+function writeShift(trackId, semitones) {
+  try {
+    const raw = localStorage.getItem(SHIFT_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    if (semitones === 0) delete map[String(trackId)];
+    else map[String(trackId)] = semitones;
+    localStorage.setItem(SHIFT_KEY, JSON.stringify(map));
+  } catch {
+  }
+}
+function shiftLabel(shift) {
+  if (shift === 0) return "Key";
+  if (shift > 0) return `+${shift} \xB7 capo ${shift}`;
+  return String(shift);
+}
 function useCompact() {
   const [compact, setCompact] = useState(
     () => typeof window !== "undefined" && window.matchMedia(COMPACT_QUERY).matches
@@ -430,10 +487,12 @@ function Diagram({ shape, size = 50 }) {
     })
   ] });
 }
-function voicings(name, imported, instrument) {
+function voicings(name, imported, instrument, shifted = false) {
   if (instrument === "ukulele") return ukeShapesFor(name);
-  const ug = imported[name];
-  if (ug?.length) return fromUg(ug);
+  if (!shifted) {
+    const ug = imported[name];
+    if (ug?.length) return fromUg(ug);
+  }
   return shapesFor(name);
 }
 function peekAt(name, el) {
@@ -536,6 +595,15 @@ function ChordPanel({
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
   const [peek, setPeek] = useState(null);
+  const [shift, setShift] = useState(() => readShift(trackId));
+  useEffect(() => setShift(readShift(trackId)), [trackId]);
+  const changeShift = (delta) => {
+    setShift((prev) => {
+      const next = delta === "reset" ? 0 : Math.min(11, Math.max(-11, prev + delta));
+      writeShift(trackId, next);
+      return next;
+    });
+  };
   const [showPreamble, setShowPreamble] = useState(false);
   const [prefs, setPrefs] = useState(readPrefs);
   const compact = useCompact();
@@ -572,7 +640,18 @@ function ChordPanel({
       dead = true;
     };
   }, [trackId]);
-  const parsed = data === "loading" ? null : data.parsed;
+  const rawParsed = data === "loading" ? null : data.parsed;
+  const parsed = useMemo(() => {
+    if (!rawParsed || shift === 0) return rawParsed;
+    const flats = preferFlatsFor(rawParsed.chords[0], shift);
+    const move = (name) => transposeChordName(name, shift, flats);
+    const block = (b) => b.kind === "line" && b.chords ? { ...b, chords: b.chords.map((c) => c.deco ? c : { ...c, name: move(c.name) }) } : b;
+    return {
+      preamble: rawParsed.preamble.map(block),
+      blocks: rawParsed.blocks.map(block),
+      chords: rawParsed.chords.map(move)
+    };
+  }, [rawParsed, shift]);
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -666,7 +745,7 @@ function ChordPanel({
     }
   };
   const shapes = data === "loading" ? {} : data.shapes;
-  const peekShapes = peek ? voicings(peek.name, shapes, prefs.instrument) : [];
+  const peekShapes = peek ? voicings(peek.name, shapes, prefs.instrument, shift !== 0) : [];
   const strip = (where) => parsed && parsed.chords.length > 0 ? /* @__PURE__ */ jsxs("div", { className: `cstrip ${where}`, children: [
     /* @__PURE__ */ jsx("div", { className: "cinstr", role: "group", "aria-label": "Diagram instrument", children: ["guitar", "ukulele"].map((inst) => /* @__PURE__ */ jsx(
       "button",
@@ -678,8 +757,23 @@ function ChordPanel({
       },
       inst
     )) }),
+    /* @__PURE__ */ jsxs("div", { className: "cshift", role: "group", "aria-label": "Transpose", children: [
+      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => changeShift(-1), disabled: shift <= -11, title: "Down a semitone", children: "\u266D" }),
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          type: "button",
+          className: shift === 0 ? "lbl" : "lbl on",
+          onClick: () => changeShift("reset"),
+          disabled: shift === 0,
+          title: shift === 0 ? "Written key" : "Back to the written key",
+          children: shiftLabel(shift)
+        }
+      ),
+      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => changeShift(1), disabled: shift >= 11, title: "Up a semitone", children: "\u266F" })
+    ] }),
     parsed.chords.map((name) => {
-      const v = voicings(name, shapes, prefs.instrument);
+      const v = voicings(name, shapes, prefs.instrument, shift !== 0);
       return /* @__PURE__ */ jsxs(
         "button",
         {
@@ -825,6 +919,20 @@ function ChordPanel({
       ] }),
       !compact && /* @__PURE__ */ jsxs("div", { className: "chordfoot", children: [
         /* @__PURE__ */ jsxs("div", { className: "ctools", children: [
+          /* @__PURE__ */ jsx(
+            Stepper,
+            {
+              label: shiftLabel(shift),
+              down: "\u266D",
+              up: "\u266F",
+              canDown: shift > -11,
+              canUp: shift < 11,
+              onDown: () => changeShift(-1),
+              onUp: () => changeShift(1),
+              onLabel: shift === 0 ? void 0 : () => changeShift("reset"),
+              labelTitle: "Back to the written key"
+            }
+          ),
           /* @__PURE__ */ jsx(
             Segments,
             {

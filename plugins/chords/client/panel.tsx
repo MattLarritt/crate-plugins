@@ -1,6 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { chords, saveChords, deleteChords, type ChordSheetResponse, type ParsedSheet, type SheetBlock } from './api';
-import { fromUg, shapesFor, ukeShapesFor, type Shape } from './chordshapes';
+import {
+  fromUg,
+  preferFlatsFor,
+  shapesFor,
+  transposeChordName,
+  ukeShapesFor,
+  type Shape,
+} from './chordshapes';
 import { WORDMARK } from 'crate/logo';
 
 /**
@@ -114,6 +121,49 @@ function writePrefs(p: ViewPrefs): void {
   } catch {
     /* nothing to do, and nothing worth telling anybody */
   }
+}
+
+/*
+ * Transposition is remembered PER TRACK, not with the view preferences.
+ *
+ * A capo position is a fact about one song in one singer's range — the view preferences are
+ * about this screen and apply to everything. Somebody who moves "Tonight, Tonight" down three
+ * expects it there next week, and expects the next song untouched.
+ */
+const SHIFT_KEY = 'crate.chords.shift';
+
+function readShift(trackId: number): number {
+  try {
+    const raw = localStorage.getItem(SHIFT_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    const n = Number(map[String(trackId)]) || 0;
+    return Math.min(11, Math.max(-11, n));
+  } catch {
+    return 0;
+  }
+}
+
+function writeShift(trackId: number, semitones: number): void {
+  try {
+    const raw = localStorage.getItem(SHIFT_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    if (semitones === 0) delete map[String(trackId)];
+    else map[String(trackId)] = semitones;
+    localStorage.setItem(SHIFT_KEY, JSON.stringify(map));
+  } catch {
+    /* a remembered key is not worth a blank panel in private browsing */
+  }
+}
+
+/**
+ * How the transpose control reads. "Key" when untouched, then a signed semitone count with
+ * the capo equivalent for the direction a guitarist can actually clamp — up. Down three is
+ * not a capo position, so it does not claim to be one.
+ */
+function shiftLabel(shift: number): string {
+  if (shift === 0) return 'Key';
+  if (shift > 0) return `+${shift} · capo ${shift}`;
+  return String(shift);
 }
 
 /** Whether the panel is in its phone shape. Follows a rotation, not just the first paint. */
@@ -285,10 +335,18 @@ type UgShapes = Record<string, { frets: number[]; fingers: number[]; baseFret: n
  * chart. Ukulele always derives: an Ultimate Guitar applicature is six guitar strings, and
  * there is nothing honest a four-string diagram can take from it.
  */
-function voicings(name: string, imported: UgShapes, instrument: Instrument): Shape[] {
+function voicings(name: string, imported: UgShapes, instrument: Instrument, shifted = false): Shape[] {
   if (instrument === 'ukulele') return ukeShapesFor(name);
-  const ug = imported[name];
-  if (ug?.length) return fromUg(ug);
+  /*
+   * A transposed sheet cannot use the import's shapes. They are keyed by the ORIGINAL chord
+   * name, and sliding one up two frets is right for a barre chord and nonsense for an open
+   * one — the open strings do not move. The derived chart knows the real voicing at the new
+   * root, so once the sheet is shifted that is the only honest source.
+   */
+  if (!shifted) {
+    const ug = imported[name];
+    if (ug?.length) return fromUg(ug);
+  }
   return shapesFor(name);
 }
 
@@ -483,6 +541,21 @@ export function ChordPanel({
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
   const [peek, setPeek] = useState<Peek | null>(null);
+  /** Semitones the sheet is displaced by. Loaded per track, so switching songs reloads it. */
+  const [shift, setShift] = useState(() => readShift(trackId));
+  useEffect(() => setShift(readShift(trackId)), [trackId]);
+  /*
+   * Takes a DELTA and updates functionally, rather than taking the computed next value.
+   * Two quick taps on ♯ both read the same stale `shift` from their closure and both
+   * asked for +1, so the sheet moved a semitone for two presses.
+   */
+  const changeShift = (delta: number | 'reset') => {
+    setShift((prev) => {
+      const next = delta === 'reset' ? 0 : Math.min(11, Math.max(-11, prev + delta));
+      writeShift(trackId, next);
+      return next;
+    });
+  };
   const [showPreamble, setShowPreamble] = useState(false);
   const [prefs, setPrefs] = useState<ViewPrefs>(readPrefs);
   const compact = useCompact();
@@ -528,7 +601,30 @@ export function ChordPanel({
     };
   }, [trackId]);
 
-  const parsed: ParsedSheet | null = data === 'loading' ? null : data.parsed;
+  const rawParsed: ParsedSheet | null = data === 'loading' ? null : data.parsed;
+
+  /*
+   * The sheet as it should be READ right now: every chord name moved by `shift`.
+   *
+   * Done here rather than by rewriting the stored body, so the sheet on the server stays
+   * exactly what the tabber wrote and the transposition is a lens over it. Tab blocks pass
+   * through untouched — their fret numbers are positions on a fretboard, and adding two to
+   * each would silently move the open strings, which are not notes you can shift.
+   */
+  const parsed: ParsedSheet | null = useMemo(() => {
+    if (!rawParsed || shift === 0) return rawParsed;
+    const flats = preferFlatsFor(rawParsed.chords[0], shift);
+    const move = (name: string) => transposeChordName(name, shift, flats);
+    const block = (b: SheetBlock): SheetBlock =>
+      b.kind === 'line' && b.chords
+        ? { ...b, chords: b.chords.map((c) => (c.deco ? c : { ...c, name: move(c.name) })) }
+        : b;
+    return {
+      preamble: rawParsed.preamble.map(block),
+      blocks: rawParsed.blocks.map(block),
+      chords: rawParsed.chords.map(move),
+    };
+  }, [rawParsed, shift]);
 
   /*
    * Watch the viewport rather than the window: the diagram rail can take a strip off the left
@@ -675,7 +771,7 @@ export function ChordPanel({
   };
 
   const shapes: UgShapes = data === 'loading' ? {} : data.shapes;
-  const peekShapes = peek ? voicings(peek.name, shapes, prefs.instrument) : [];
+  const peekShapes = peek ? voicings(peek.name, shapes, prefs.instrument, shift !== 0) : [];
 
   /** The diagram rail, in whichever direction it is running. */
   const strip = (where: 'top' | 'left') =>
@@ -695,8 +791,27 @@ export function ChordPanel({
             </button>
           ))}
         </div>
+        {/* Transpose lives in the strip too, not only in the footer: on a phone there IS no
+            footer, and changing key is the one thing you do with a guitar in your hands. */}
+        <div className="cshift" role="group" aria-label="Transpose">
+          <button type="button" onClick={() => changeShift(-1)} disabled={shift <= -11} title="Down a semitone">
+            ♭
+          </button>
+          <button
+            type="button"
+            className={shift === 0 ? 'lbl' : 'lbl on'}
+            onClick={() => changeShift('reset')}
+            disabled={shift === 0}
+            title={shift === 0 ? 'Written key' : 'Back to the written key'}
+          >
+            {shiftLabel(shift)}
+          </button>
+          <button type="button" onClick={() => changeShift(1)} disabled={shift >= 11} title="Up a semitone">
+            ♯
+          </button>
+        </div>
         {parsed.chords.map((name) => {
-          const v = voicings(name, shapes, prefs.instrument);
+          const v = voicings(name, shapes, prefs.instrument, shift !== 0);
           return (
             <button
               key={name}
@@ -876,6 +991,17 @@ export function ChordPanel({
           {!compact && (
           <div className="chordfoot">
             <div className="ctools">
+              <Stepper
+                label={shiftLabel(shift)}
+                down="♭"
+                up="♯"
+                canDown={shift > -11}
+                canUp={shift < 11}
+                onDown={() => changeShift(-1)}
+                onUp={() => changeShift(1)}
+                onLabel={shift === 0 ? undefined : () => changeShift('reset')}
+                labelTitle="Back to the written key"
+              />
               <Segments<StripWhere>
                 value={prefs.strip}
                 options={[

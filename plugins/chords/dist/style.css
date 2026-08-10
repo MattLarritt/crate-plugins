@@ -381,3 +381,26 @@
   border-color: var(--acc);
   background: var(--acc-soft);
 }
+
+/* Transpose, inside the diagram strip — the phone's only control surface. Mirrors .cinstr
+   so the two read as one cluster rather than two unrelated widgets. */
+.chordpanel .cshift {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 10px;
+  flex: none;
+}
+.chordpanel .cshift button {
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: 0.82rem;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.chordpanel .cshift button:disabled { opacity: 0.45; cursor: default; }
+.chordpanel .cshift .lbl { min-width: 42px; font-variant-numeric: tabular-nums; }
+.chordpanel .cshift .lbl.on { background: var(--acc); color: #fff; border-color: var(--acc); }
