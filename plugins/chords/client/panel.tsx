@@ -156,14 +156,42 @@ function writeShift(trackId: number, semitones: number): void {
 }
 
 /**
- * How the transpose control reads. "Key" when untouched, then a signed semitone count with
- * the capo equivalent for the direction a guitarist can actually clamp — up. Down three is
- * not a capo position, so it does not claim to be one.
+ * How the transpose control reads: just the shift, with a proper minus sign.
+ *
+ * It used to append "capo N", which was wrong in two ways on a sheet that already asks for
+ * a capo. There are TWO ways to play a shifted song, and the label was mixing them:
+ *
+ *   1. play the chords now on screen, leaving the capo exactly where the sheet says
+ *   2. play the ORIGINAL chords with the capo moved to (written + shift)
+ *
+ * Both land on the same pitch. The panel does (1) — it moves the chords — so the capo shown
+ * beside the title stays the written one, and (2) is offered in the tooltip for anyone who
+ * would rather move the clamp than learn new shapes.
  */
 function shiftLabel(shift: number): string {
   if (shift === 0) return 'Key';
-  if (shift > 0) return `+${shift} · capo ${shift}`;
-  return String(shift);
+  return shift > 0 ? `+${shift}` : `\u2212${Math.abs(shift)}`;
+}
+
+/** The written capo as a number: sheets say "1", "1st fret", or nothing at all. */
+function capoFret(capo: string): number {
+  const m = /(\d+)/.exec(capo ?? '');
+  return m ? Number(m[1]) : 0;
+}
+
+/** What the control explains on hover, including the move-the-capo alternative. */
+function shiftTitle(shift: number, writtenCapo: number): string {
+  if (shift === 0) return writtenCapo ? `Written key, capo ${writtenCapo}` : 'Written key';
+  const dir = shift > 0 ? 'up' : 'down';
+  const n = Math.abs(shift);
+  const base = `Chords moved ${dir} ${n} semitone${n === 1 ? '' : 's'}${
+    writtenCapo ? `, capo stays at ${writtenCapo}` : ''
+  }`;
+  // Only upward shifts have a capo equivalent, and only while it stays on the neck.
+  const alt = writtenCapo + shift;
+  return shift > 0 && alt <= 11
+    ? `${base}. Or play the written chords with the capo at ${alt}.`
+    : base;
 }
 
 /** Whether the panel is in its phone shape. Follows a rotation, not just the first paint. */
@@ -544,6 +572,8 @@ export function ChordPanel({
   /** Semitones the sheet is displaced by. Loaded per track, so switching songs reloads it. */
   const [shift, setShift] = useState(() => readShift(trackId));
   useEffect(() => setShift(readShift(trackId)), [trackId]);
+  /** The capo the sheet itself asks for. Transposing does not move it — see shiftLabel. */
+  const writtenCapo = data === 'loading' ? 0 : capoFret(data.capo);
   /*
    * Takes a DELTA and updates functionally, rather than taking the computed next value.
    * Two quick taps on ♯ both read the same stale `shift` from their closure and both
@@ -802,13 +832,21 @@ export function ChordPanel({
             className={shift === 0 ? 'lbl' : 'lbl on'}
             onClick={() => changeShift('reset')}
             disabled={shift === 0}
-            title={shift === 0 ? 'Written key' : 'Back to the written key'}
+            title={shiftTitle(shift, writtenCapo)}
           >
             {shiftLabel(shift)}
           </button>
           <button type="button" onClick={() => changeShift(1)} disabled={shift >= 11} title="Up a semitone">
             ♯
           </button>
+          {/* The title bar states the capo too, but it ellipsises away on a phone — which is
+              exactly where somebody reads "+3" and moves the clamp to the third fret. It sits
+              beside the stepper and does NOT move with the shift, because it doesn't. */}
+          {writtenCapo > 0 && (
+            <span className="capo" title={`This sheet is written for a capo at fret ${writtenCapo}`}>
+              capo {writtenCapo}
+            </span>
+          )}
         </div>
         {parsed.chords.map((name) => {
           const v = voicings(name, shapes, prefs.instrument, shift !== 0);
@@ -845,6 +883,7 @@ export function ChordPanel({
             {artistName}
             {data !== 'loading' && data.tuning ? ` · ${data.tuning}` : ''}
             {data !== 'loading' && data.capo ? ` · capo ${data.capo}` : ''}
+            {shift !== 0 ? ` · chords ${shift > 0 ? 'up' : 'down'} ${Math.abs(shift)}` : ''}
           </div>
         </div>
         {data !== 'loading' && data.sourceUrl && !editing && (
@@ -1000,7 +1039,7 @@ export function ChordPanel({
                 onDown={() => changeShift(-1)}
                 onUp={() => changeShift(1)}
                 onLabel={shift === 0 ? undefined : () => changeShift('reset')}
-                labelTitle="Back to the written key"
+                labelTitle={shiftTitle(shift, writtenCapo)}
               />
               <Segments<StripWhere>
                 value={prefs.strip}

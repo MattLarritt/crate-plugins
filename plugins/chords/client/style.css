@@ -404,3 +404,14 @@
 .chordpanel .cshift button:disabled { opacity: 0.45; cursor: default; }
 .chordpanel .cshift .lbl { min-width: 42px; font-variant-numeric: tabular-nums; }
 .chordpanel .cshift .lbl.on { background: var(--acc); color: #fff; border-color: var(--acc); }
+/* Not a control — a standing fact about the sheet, so it reads flatter than the buttons. */
+.chordpanel .cshift .capo {
+  margin-left: 4px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1;
+  white-space: nowrap;
+}

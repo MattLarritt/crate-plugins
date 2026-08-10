@@ -3,7 +3,7 @@
     {
       "id": "chords",
       "name": "Chords & notes",
-      "version": "1.2.0",
+      "version": "1.2.2",
       "description": "Chord sheets and tabs for your songs, imported from Ultimate Guitar. Guitar or ukulele diagrams, and a transpose control for singing it in your own key.",
       "dir": "plugins/chords/dist"
     },

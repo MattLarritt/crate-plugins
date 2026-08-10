@@ -368,8 +368,19 @@ function writeShift(trackId, semitones) {
 }
 function shiftLabel(shift) {
   if (shift === 0) return "Key";
-  if (shift > 0) return `+${shift} \xB7 capo ${shift}`;
-  return String(shift);
+  return shift > 0 ? `+${shift}` : `\u2212${Math.abs(shift)}`;
+}
+function capoFret(capo) {
+  const m = /(\d+)/.exec(capo ?? "");
+  return m ? Number(m[1]) : 0;
+}
+function shiftTitle(shift, writtenCapo) {
+  if (shift === 0) return writtenCapo ? `Written key, capo ${writtenCapo}` : "Written key";
+  const dir = shift > 0 ? "up" : "down";
+  const n = Math.abs(shift);
+  const base = `Chords moved ${dir} ${n} semitone${n === 1 ? "" : "s"}${writtenCapo ? `, capo stays at ${writtenCapo}` : ""}`;
+  const alt = writtenCapo + shift;
+  return shift > 0 && alt <= 11 ? `${base}. Or play the written chords with the capo at ${alt}.` : base;
 }
 function useCompact() {
   const [compact, setCompact] = useState(
@@ -597,6 +608,7 @@ function ChordPanel({
   const [peek, setPeek] = useState(null);
   const [shift, setShift] = useState(() => readShift(trackId));
   useEffect(() => setShift(readShift(trackId)), [trackId]);
+  const writtenCapo = data === "loading" ? 0 : capoFret(data.capo);
   const changeShift = (delta) => {
     setShift((prev) => {
       const next = delta === "reset" ? 0 : Math.min(11, Math.max(-11, prev + delta));
@@ -766,11 +778,15 @@ function ChordPanel({
           className: shift === 0 ? "lbl" : "lbl on",
           onClick: () => changeShift("reset"),
           disabled: shift === 0,
-          title: shift === 0 ? "Written key" : "Back to the written key",
+          title: shiftTitle(shift, writtenCapo),
           children: shiftLabel(shift)
         }
       ),
-      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => changeShift(1), disabled: shift >= 11, title: "Up a semitone", children: "\u266F" })
+      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => changeShift(1), disabled: shift >= 11, title: "Up a semitone", children: "\u266F" }),
+      writtenCapo > 0 && /* @__PURE__ */ jsxs("span", { className: "capo", title: `This sheet is written for a capo at fret ${writtenCapo}`, children: [
+        "capo ",
+        writtenCapo
+      ] })
     ] }),
     parsed.chords.map((name) => {
       const v = voicings(name, shapes, prefs.instrument, shift !== 0);
@@ -801,7 +817,8 @@ function ChordPanel({
         /* @__PURE__ */ jsxs("div", { className: "s muted", children: [
           artistName,
           data !== "loading" && data.tuning ? ` \xB7 ${data.tuning}` : "",
-          data !== "loading" && data.capo ? ` \xB7 capo ${data.capo}` : ""
+          data !== "loading" && data.capo ? ` \xB7 capo ${data.capo}` : "",
+          shift !== 0 ? ` \xB7 chords ${shift > 0 ? "up" : "down"} ${Math.abs(shift)}` : ""
         ] })
       ] }),
       data !== "loading" && data.sourceUrl && !editing && // Where an import came from, credited and reachable. The tabber wrote this.
@@ -930,7 +947,7 @@ function ChordPanel({
               onDown: () => changeShift(-1),
               onUp: () => changeShift(1),
               onLabel: shift === 0 ? void 0 : () => changeShift("reset"),
-              labelTitle: "Back to the written key"
+              labelTitle: shiftTitle(shift, writtenCapo)
             }
           ),
           /* @__PURE__ */ jsx(
