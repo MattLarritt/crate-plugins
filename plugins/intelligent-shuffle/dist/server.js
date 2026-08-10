@@ -108,7 +108,17 @@ var DELTAS = {
   less: { track: -4, album: -1.5, artist: -1.5, genre: -2.5, style: -2, era: -2, energy: -2 }
 };
 var HARD_NO = -3;
-var TEMPERATURE = 0.85;
+var TEMPERATURE = 0.6;
+var IMPORTANCE = {
+  genre: 1,
+  style: 1.1,
+  era: 0.45,
+  energy: 0.4,
+  artist: 0.5,
+  album: 0.3,
+  track: 0.4
+};
+var Z_CAP = 3;
 var PER_ARTIST_CAP = 1;
 var GENRE_CLAMP = 4;
 var STYLE_CLAMP = 4.5;
@@ -118,6 +128,13 @@ var ESCALATE_WINDOW_S = 6 * 3600;
 var ESCALATE_STEP = 0.75;
 var ESCALATE_MAX = 3;
 var ENERGY_CLAMP = 2.5;
+var SPEC_REF = 0.05;
+var SPEC_FLOOR = 0.15;
+var ARTIST_TAG_FACTOR = 0.6;
+var WEIGHT_CEILING = 10;
+var REVERSAL_BOOST = 3;
+var ARTIST_COOLDOWN = 6;
+var COOLDOWN_HALF_SONGS = 2.5;
 var energyBandOf = (energy) => {
   if (energy == null || energy < 0) return null;
   if (energy < 0.35) return "chill";
@@ -212,6 +229,29 @@ var plugin = {
       }
       return out.slice(0, 10);
     };
+    const CORPUS_TTL_S = 600;
+    const corpusCache = /* @__PURE__ */ new Map();
+    const corpus = (userId) => {
+      const cached = corpusCache.get(userId);
+      if (cached && now() - cached.at < CORPUS_TTL_S) return cached;
+      const lib = library(userId);
+      const ag = genresOf([...new Set(lib.map((t) => t.norm_artist))]);
+      const genreDf = /* @__PURE__ */ new Map();
+      const familyDf = /* @__PURE__ */ new Map();
+      for (const t of lib) {
+        const gs = genresFor(t, ag);
+        for (const g of gs) genreDf.set(g, (genreDf.get(g) ?? 0) + 1);
+        for (const f of familiesOf(gs)) familyDf.set(f, (familyDf.get(f) ?? 0) + 1);
+      }
+      const fresh = { n: lib.length, genreDf, familyDf, at: now() };
+      corpusCache.set(userId, fresh);
+      return fresh;
+    };
+    const specificity = (df, n) => {
+      if (!df || !n || df >= n) return SPEC_FLOOR;
+      const ref = Math.log(1 / SPEC_REF);
+      return Math.max(SPEC_FLOOR, Math.min(1, Math.log(n / df) / ref));
+    };
     const bump = db.prepare(
       `INSERT INTO ishuffle_weights (user_id, kind, key, label, weight, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -221,14 +261,28 @@ var plugin = {
     const addWeight = (userId, kind, key, label, delta) => {
       const row = db.prepare("SELECT weight, updated_at FROM ishuffle_weights WHERE user_id = ? AND kind = ? AND key = ?").get(userId, kind, key);
       const current = row ? decayed(row.weight, row.updated_at) : 0;
-      bump.run(userId, kind, key, label, current + delta, now());
+      let moved = current + delta;
+      if (current !== 0 && Math.sign(delta) === -Math.sign(current)) {
+        const undo = Math.min(Math.abs(delta), Math.abs(current));
+        const past = Math.abs(delta) - undo;
+        moved = current + Math.sign(delta) * (undo * REVERSAL_BOOST + past);
+      }
+      const next = Math.max(-WEIGHT_CEILING, Math.min(WEIGHT_CEILING, moved));
+      bump.run(userId, kind, key, label, next, now());
     };
     const mood = (userId) => {
       const all = [...weights(userId).entries()].map(([k, v]) => ({ kind: k.split("|")[0], label: v.label || k.split("|")[1], weight: v.w })).filter((e) => e.kind !== "track" && Math.abs(e.weight) >= FLOOR);
       all.sort((a, b) => b.weight - a.weight);
+      const seenLabels = /* @__PURE__ */ new Set();
+      const deduped = all.filter((e) => {
+        const key = e.label.toLowerCase();
+        if (seenLabels.has(key)) return false;
+        seenLabels.add(key);
+        return true;
+      });
       return {
-        into: all.filter((e) => e.weight > 0).slice(0, 8),
-        outOf: all.filter((e) => e.weight < 0).slice(-8).reverse()
+        into: deduped.filter((e) => e.weight > 0).slice(0, 8),
+        outOf: deduped.filter((e) => e.weight < 0).slice(-8).reverse()
       };
     };
     app.post("/api/ishuffle/plan", async (req, reply) => {
@@ -238,10 +292,25 @@ var plugin = {
       const b = req.body ?? {};
       const count = Math.min(Math.max(Number(b.count) || 6, 1), 30);
       const exclude = new Set(Array.isArray(b.exclude) ? b.exclude.map(Number) : []);
+      const playedOrder = Array.isArray(b.played) ? b.played.map(Number) : [];
       const afterId = Number(b.afterTrackId) || 0;
       const afterArtist = afterId ? db.prepare("SELECT norm_artist FROM tracks WHERE id = ?").get(afterId)?.norm_artist ?? "" : "";
       const lib = library(c.id);
       const w = weights(c.id);
+      const cooldown = /* @__PURE__ */ new Map();
+      if (playedOrder.length) {
+        const marks = playedOrder.map(() => "?").join(",");
+        const artistOf = /* @__PURE__ */ new Map();
+        for (const r of db.prepare(`SELECT id, norm_artist FROM tracks WHERE id IN (${marks})`).all(...playedOrder)) {
+          artistOf.set(r.id, r.norm_artist);
+        }
+        playedOrder.forEach((id, i) => {
+          const a = artistOf.get(id);
+          if (!a) return;
+          const songsAgo = playedOrder.length - i;
+          cooldown.set(a, ARTIST_COOLDOWN * Math.pow(0.5, (songsAgo - 1) / COOLDOWN_HALF_SONGS));
+        });
+      }
       const genres = genresOf([...new Set(lib.map((t) => t.norm_artist))]);
       const recent = new Set(
         db.prepare("SELECT track_id FROM plays WHERE user_id = ? AND last_played > ?").all(c.id, now() - 4 * 3600).map((r) => r.track_id)
@@ -250,12 +319,9 @@ var plugin = {
       if (pool.filter((t) => !recent.has(t.id)).length >= count * 2) {
         pool = pool.filter((t) => !recent.has(t.id));
       }
-      const scored = pool.map((t) => {
+      const raw = pool.map((t) => {
         const gs = genresFor(t, genres);
-        const gw = Math.max(
-          -GENRE_CLAMP,
-          Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0))
-        );
+        const gw = gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0);
         const fams = familiesOf(gs);
         let sw = 0;
         const counted = /* @__PURE__ */ new Set();
@@ -270,14 +336,44 @@ var plugin = {
             sw += ADJ_FACTOR * (w.get(`style|${adj}`)?.w ?? 0);
           }
         }
-        sw = Math.max(-STYLE_CLAMP, Math.min(STYLE_CLAMP, sw));
         const era = eraOf(t.year);
-        const ew = era ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0)) : 0;
+        const ew = era ? w.get(`era|${era.key}`)?.w ?? 0 : 0;
         const band = energyBandOf(t.energy);
-        const nw = band ? Math.max(-ENERGY_CLAMP, Math.min(ENERGY_CLAMP, w.get(`energy|${band}`)?.w ?? 0)) : 0;
-        const score = (w.get(`track|${String(t.id)}`)?.w ?? 0) + (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) + (w.get(`artist|${t.norm_artist}`)?.w ?? 0) + gw + sw + ew + nw;
-        return { t, score };
-      }).filter((e) => e.score > HARD_NO);
+        const nw = band ? w.get(`energy|${band}`)?.w ?? 0 : 0;
+        return {
+          t,
+          gw,
+          sw,
+          ew,
+          nw,
+          aw: w.get(`artist|${t.norm_artist}`)?.w ?? 0,
+          alw: w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0,
+          tw: w.get(`track|${String(t.id)}`)?.w ?? 0,
+          cool: cooldown.get(t.norm_artist) ?? 0
+        };
+      });
+      const clamp = (v, c2) => Math.max(-c2, Math.min(c2, v));
+      const vetoed = raw.filter(
+        (e) => clamp(e.gw, GENRE_CLAMP) + clamp(e.sw, STYLE_CLAMP) + clamp(e.ew, ERA_CLAMP) + clamp(e.nw, ENERGY_CLAMP) + e.aw + e.alw + e.tw > HARD_NO
+      );
+      const normaliser = (values) => {
+        const mean = values.reduce((a, b2) => a + b2, 0) / (values.length || 1);
+        const variance = values.reduce((a, b2) => a + (b2 - mean) ** 2, 0) / (values.length || 1);
+        const sd = Math.sqrt(variance);
+        if (sd < 1e-9) return () => 0;
+        return (v) => clamp((v - mean) / sd, Z_CAP);
+      };
+      const zg = normaliser(vetoed.map((e) => e.gw));
+      const zs = normaliser(vetoed.map((e) => e.sw));
+      const ze = normaliser(vetoed.map((e) => e.ew));
+      const zn = normaliser(vetoed.map((e) => e.nw));
+      const za = normaliser(vetoed.map((e) => e.aw));
+      const zal = normaliser(vetoed.map((e) => e.alw));
+      const zt = normaliser(vetoed.map((e) => e.tw));
+      const scored = vetoed.map((e) => ({
+        t: e.t,
+        score: IMPORTANCE.genre * zg(e.gw) + IMPORTANCE.style * zs(e.sw) + IMPORTANCE.era * ze(e.ew) + IMPORTANCE.energy * zn(e.nw) + IMPORTANCE.artist * za(e.aw) + IMPORTANCE.album * zal(e.alw) + IMPORTANCE.track * zt(e.tw) - e.cool
+      }));
       const picked = [];
       const perArtist = /* @__PURE__ */ new Map();
       const candidates = [...scored];
@@ -342,9 +438,21 @@ var plugin = {
       addWeight(c.id, "album", `${t.norm_artist}|${t.norm_album}`, t.album_title, d.album);
       addWeight(c.id, "artist", t.norm_artist, t.artist_name, d.artist * artistShare);
       const gs = genresFor(t, genresOf([t.norm_artist])).slice(0, 6);
-      for (const g of gs) addWeight(c.id, "genre", g, g, d.genre);
-      const fams = familiesOf(gs).slice(0, 3);
-      for (const f of fams) addWeight(c.id, "style", f, FAMILY_LABEL[f], d.style);
+      const cp = corpus(c.id);
+      const ownTags = new Set(
+        (t.genres ? t.genres.split(", ") : []).map((g) => g.trim().toLowerCase()).filter(Boolean)
+      );
+      const pull = (g) => specificity(cp.genreDf.get(g) ?? 0, cp.n) * (ownTags.has(g) ? 1 : ARTIST_TAG_FACTOR);
+      for (const g of gs) addWeight(c.id, "genre", g, g, d.genre * pull(g));
+      const famPull = /* @__PURE__ */ new Map();
+      for (const g of gs) {
+        const f = familyOf(g);
+        if (!f) continue;
+        const p = specificity(cp.familyDf.get(f) ?? 0, cp.n) * (ownTags.has(g) ? 1 : ARTIST_TAG_FACTOR);
+        famPull.set(f, Math.max(famPull.get(f) ?? 0, p));
+      }
+      const fams = [...famPull.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, 3);
+      for (const [f, p] of fams) addWeight(c.id, "style", f, FAMILY_LABEL[f], d.style * p);
       const era = eraOf(t.year);
       if (era) addWeight(c.id, "era", era.key, era.label, d.era);
       const band = energyBandOf(t.energy);
@@ -362,6 +470,7 @@ var plugin = {
           artist: t.artist_name,
           album: t.album_title,
           genres: gs,
+          styles: fams.map(([f]) => FAMILY_LABEL[f]),
           era: era?.label ?? null,
           energy: band
         },

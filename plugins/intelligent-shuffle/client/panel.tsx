@@ -42,7 +42,7 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
   /** A fresh tail against the mood as it stands. Only a NO triggers this — see voteOn. */
   const redeal = useCallback(async () => {
     const exclude = [...playedIds(), ...(p.current ? [p.current.trackId] : [])];
-    const r = await plan(TAIL, exclude, p.current?.trackId);
+    const r = await plan(TAIL, exclude, p.current?.trackId, exclude);
     p.replaceUpcoming(r.tracks);
   }, [p]);
 
@@ -71,7 +71,7 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
     void (async () => {
       if (seed && p.current) await vote(p.current.trackId, 'more').then((r) => setMood(r.mood));
       const exclude = p.current ? [p.current.trackId] : [];
-      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude, p.current?.trackId);
+      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude, p.current?.trackId, exclude);
       if (!r.tracks.length) {
         say('bad', 'nothing to play — is your library empty?');
         return;

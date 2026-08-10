@@ -82,7 +82,35 @@ const HARD_NO = -3;
  * family lit up per vote, the variety comes from the breadth of what scores well — the
  * sampler can afford conviction.
  */
-const TEMPERATURE = 0.85;
+const TEMPERATURE = 0.6;
+
+/**
+ * How much each dimension gets to say, once every dimension has been put on the SAME SCALE.
+ *
+ * This is the fix for the DJ's oldest complaint — that it took a dozen songs to find the mood
+ * and then stopped improving. Scores used to be raw weight sums, each hard-clamped. But a mood
+ * grows: after ten votes `metal` sat at +30 and plain `rock` at +22, and since both exceeded
+ * the clamp of 4 they contributed EXACTLY THE SAME. The clamp erased the distinction at the
+ * very moment the listener had made it clearest, and the queue went back to coin-flipping
+ * between metal and Coldplay.
+ *
+ * So each dimension is now normalised across the candidates actually on offer (z-score, capped
+ * at ±Z_CAP) before being combined with these importances. What matters is how a track compares
+ * to the rest of the library RIGHT NOW, which cannot saturate however long the session runs. A
+ * cold start still has zero spread everywhere, so it still collapses to a fair shuffle.
+ */
+const IMPORTANCE = {
+  genre: 1,
+  style: 1.1,
+  era: 0.45,
+  energy: 0.4,
+  artist: 0.5,
+  album: 0.3,
+  track: 0.4,
+} as const;
+
+/** Z-scores past three standard deviations are outliers, not stronger opinions. */
+const Z_CAP = 3;
 
 /**
  * Tracks the same artist may occupy in one planned batch. ONE: a DJ plays the room's vibe,
@@ -142,6 +170,71 @@ const ESCALATE_MAX = 3;
  * the music is.
  */
 const ENERGY_CLAMP = 2.5;
+
+/**
+ * SPECIFICITY: how much a tag is worth saying.
+ *
+ * The single biggest reason the DJ used to take a dozen songs to find the mood. "rock" is on
+ * 48% of this library and the rock FAMILY on 55%, so liking one stoner-metal record wrote
+ * `rock +2.5` and `rock family +2` — at full strength, identical to `metal` — and thereby
+ * promoted half the library, Coldplay and Hozier included. A tag that describes half of
+ * everything says almost nothing about what you just liked.
+ *
+ * So a tag's delta scales by its rarity in the listener's OWN library: log(N/df) normalised
+ * against SPEC_REF, the coverage at which a tag counts as fully informative. Capped at 1 —
+ * this only ever discounts a vague tag, it never amplifies a rare one into a wild swing.
+ */
+const SPEC_REF = 0.05;
+const SPEC_FLOOR = 0.15;
+
+/**
+ * Last.fm's opinion of the ARTIST, discounted against what the file itself says.
+ *
+ * All Them Witches' files say `metal`; Last.fm adds blues, psychedelic, psychedelic rock,
+ * rock and stoner rock. Both are useful, but only one of them is about this record — the
+ * file's tag is the listener's own metadata, the artist tags are context. Weighting them
+ * equally is how a metal vote came out sounding like a rock vote.
+ */
+const ARTIST_TAG_FACTOR = 0.6;
+
+/**
+ * The most any single weight may reach, either direction.
+ *
+ * This exists for REVERSIBILITY, not for scoring. A twenty-song session used to drive `metal`
+ * to +30, and a change of heart then needed a dozen downvotes to climb out of the hole — the
+ * DJ could not be argued with. Ceilinged, three or four votes always turn the mood.
+ *
+ * It is deliberately well above the point where votes stop being distinguishable: the relative
+ * scoring below is what stops a big weight from swamping the mix, so this can be generous.
+ */
+const WEIGHT_CEILING = 10;
+
+/**
+ * How much harder a vote lands when it CONTRADICTS the mood.
+ *
+ * A DJ has to be arguable with. Confirming what the mood already says is cheap information —
+ * it is already at or near its ceiling and one more vote changes no ranking. Contradicting it
+ * is expensive information: the listener is telling you that you have it wrong. Measured on a
+ * replay of a listener building a metal mood and then rejecting it, symmetric votes left the
+ * DJ still playing metal eighteen songs later; the mood could be entered but not left.
+ *
+ * So a vote that pushes a weight back toward zero (or through it) counts for more. Only the
+ * part of the delta that undoes existing enthusiasm is boosted — once the weight has crossed
+ * zero, the rest lands at normal strength, so this accelerates changing your mind without
+ * overshooting into a mood you never asked for.
+ */
+const REVERSAL_BOOST = 3;
+
+/**
+ * An artist just played sits out for a bit, no matter how much the mood loves them.
+ *
+ * The per-batch cap said "one slot per artist", but batches are five songs and re-dealt
+ * continuously, so the top-scoring artist took a slot in EVERY batch — All Them Witches and
+ * Rammstein each landed four times in twenty songs, which reads as a stuck jukebox rather
+ * than a DJ. This penalty decays over the songs since, so they come back, later.
+ */
+const ARTIST_COOLDOWN = 6;
+const COOLDOWN_HALF_SONGS = 2.5;
 
 type Kind = 'artist' | 'album' | 'track' | 'genre' | 'style' | 'era' | 'energy';
 
@@ -303,6 +396,43 @@ const plugin: CratePlugin = {
       return out.slice(0, 10);
     };
 
+    /**
+     * How common each tag and family is in THIS listener's library — the denominator
+     * specificity needs. Recomputed at most every CORPUS_TTL_S: it moves only when the
+     * library does, and a vote must not pay for a full scan.
+     */
+    interface Corpus {
+      n: number;
+      genreDf: Map<string, number>;
+      familyDf: Map<Family, number>;
+      at: number;
+    }
+    const CORPUS_TTL_S = 600;
+    const corpusCache = new Map<number, Corpus>();
+    const corpus = (userId: number): Corpus => {
+      const cached = corpusCache.get(userId);
+      if (cached && now() - cached.at < CORPUS_TTL_S) return cached;
+      const lib = library(userId);
+      const ag = genresOf([...new Set(lib.map((t) => t.norm_artist))]);
+      const genreDf = new Map<string, number>();
+      const familyDf = new Map<Family, number>();
+      for (const t of lib) {
+        const gs = genresFor(t, ag);
+        for (const g of gs) genreDf.set(g, (genreDf.get(g) ?? 0) + 1);
+        for (const f of familiesOf(gs)) familyDf.set(f, (familyDf.get(f) ?? 0) + 1);
+      }
+      const fresh: Corpus = { n: lib.length, genreDf, familyDf, at: now() };
+      corpusCache.set(userId, fresh);
+      return fresh;
+    };
+
+    /** 1 for a tag worth saying, down to SPEC_FLOOR for one that covers half the library. */
+    const specificity = (df: number, n: number): number => {
+      if (!df || !n || df >= n) return SPEC_FLOOR;
+      const ref = Math.log(1 / SPEC_REF);
+      return Math.max(SPEC_FLOOR, Math.min(1, Math.log(n / df) / ref));
+    };
+
     const bump = db.prepare(
       `INSERT INTO ishuffle_weights (user_id, kind, key, label, weight, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -316,7 +446,19 @@ const plugin: CratePlugin = {
         .prepare('SELECT weight, updated_at FROM ishuffle_weights WHERE user_id = ? AND kind = ? AND key = ?')
         .get(userId, kind, key) as { weight: number; updated_at: number } | undefined;
       const current = row ? decayed(row.weight, row.updated_at) : 0;
-      bump.run(userId, kind, key, label, current + delta, now());
+      /*
+       * Undoing costs less than building: the stretch of this delta that walks the weight back
+       * toward zero is amplified, the stretch beyond zero is not. See REVERSAL_BOOST.
+       */
+      let moved = current + delta;
+      if (current !== 0 && Math.sign(delta) === -Math.sign(current)) {
+        const undo = Math.min(Math.abs(delta), Math.abs(current));
+        const past = Math.abs(delta) - undo;
+        moved = current + Math.sign(delta) * (undo * REVERSAL_BOOST + past);
+      }
+      // Ceilinged so the mood always stays somewhere a few votes can move it. See WEIGHT_CEILING.
+      const next = Math.max(-WEIGHT_CEILING, Math.min(WEIGHT_CEILING, moved));
+      bump.run(userId, kind, key, label, next, now());
     };
 
     /**
@@ -331,9 +473,21 @@ const plugin: CratePlugin = {
         .map(([k, v]) => ({ kind: k.split('|')[0] as Kind, label: v.label || k.split('|')[1]!, weight: v.w }))
         .filter((e) => e.kind !== 'track' && Math.abs(e.weight) >= FLOOR);
       all.sort((a, b) => b.weight - a.weight);
+      /*
+       * One chip per label. A genre and its family are often the same word — "rock" the tag and
+       * "rock" the family — and "leaning into: rock, rock" tells a person nothing twice. The
+       * strongest of the pair survives, which is also the one that is actually steering.
+       */
+      const seenLabels = new Set<string>();
+      const deduped = all.filter((e) => {
+        const key = e.label.toLowerCase();
+        if (seenLabels.has(key)) return false;
+        seenLabels.add(key);
+        return true;
+      });
       return {
-        into: all.filter((e) => e.weight > 0).slice(0, 8),
-        outOf: all.filter((e) => e.weight < 0).slice(-8).reverse(),
+        into: deduped.filter((e) => e.weight > 0).slice(0, 8),
+        outOf: deduped.filter((e) => e.weight < 0).slice(-8).reverse(),
       };
     };
 
@@ -347,9 +501,17 @@ const plugin: CratePlugin = {
       const c = need(req, reply);
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
-      const b = (req.body ?? {}) as { count?: unknown; exclude?: unknown; afterTrackId?: unknown };
+      const b = (req.body ?? {}) as {
+        count?: unknown;
+        exclude?: unknown;
+        afterTrackId?: unknown;
+        played?: unknown;
+      };
       const count = Math.min(Math.max(Number(b.count) || 6, 1), 30);
       const exclude = new Set(Array.isArray(b.exclude) ? b.exclude.map(Number) : []);
+      // What this session has already played, oldest first. `exclude` cannot answer this: it
+      // mixes played tracks with queued ones, and the cooldown needs the ORDER.
+      const playedOrder = Array.isArray(b.played) ? b.played.map(Number) : [];
       // The track this batch will play AFTER, so the no-adjacent rule holds across the seam
       // between what is already queued and what is being planned now.
       const afterId = Number(b.afterTrackId) || 0;
@@ -361,6 +523,27 @@ const plugin: CratePlugin = {
 
       const lib = library(c.id);
       const w = weights(c.id);
+      /*
+       * How long ago this session last played each artist, as a penalty. Recency comes from
+       * the played ORDER rather than a clock, because "three songs ago" is what a listener
+       * notices — an hour of one artist at two songs an hour is not the complaint.
+       */
+      const cooldown = new Map<string, number>();
+      if (playedOrder.length) {
+        const marks = playedOrder.map(() => '?').join(',');
+        const artistOf = new Map<number, string>();
+        for (const r of db
+          .prepare(`SELECT id, norm_artist FROM tracks WHERE id IN (${marks})`)
+          .all(...playedOrder) as { id: number; norm_artist: string }[]) {
+          artistOf.set(r.id, r.norm_artist);
+        }
+        playedOrder.forEach((id, i) => {
+          const a = artistOf.get(id);
+          if (!a) return;
+          const songsAgo = playedOrder.length - i;
+          cooldown.set(a, ARTIST_COOLDOWN * Math.pow(0.5, (songsAgo - 1) / COOLDOWN_HALF_SONGS));
+        });
+      }
       const genres = genresOf([...new Set(lib.map((t) => t.norm_artist))]);
       // Recently finished songs sit out for a while even unvoted — a DJ does not replay the
       // last hour. Softened automatically when the library is too small to afford it.
@@ -377,55 +560,104 @@ const plugin: CratePlugin = {
         pool = pool.filter((t) => !recent.has(t.id));
       }
 
-      const scored = pool
-        .map((t) => {
-          const gs = genresFor(t, genres);
-          // Sum of matched genre weights, clamped — not an average: averaging diluted a
-          // two-of-four match to half strength, which punished exactly the "other music LIKE
-          // this" candidates the feature exists to surface.
-          const gw = Math.max(
-            -GENRE_CLAMP,
-            Math.min(GENRE_CLAMP, gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0)),
-          );
-          /*
-           * The family layer: this track's own families at full strength, their musicmap
-           * neighbours at ADJ_FACTOR. This is what makes one System of a Down vote reach
-           * every strain of metal in the library rather than only its exact tag twins.
-           */
-          const fams = familiesOf(gs);
-          let sw = 0;
-          const counted = new Set<Family>();
-          for (const f of fams) {
-            sw += w.get(`style|${f}`)?.w ?? 0;
-            counted.add(f);
+      /*
+       * Each candidate's raw agreement with the mood, dimension by dimension. Raw and
+       * UNCLAMPED on purpose: the clamps below serve the veto, and the normalisation that
+       * follows serves the ranking. Two jobs that used to be one, badly.
+       */
+      const raw = pool.map((t) => {
+        const gs = genresFor(t, genres);
+        // Sum of matched genre weights, not an average: averaging diluted a two-of-four match
+        // to half strength, which punished exactly the "other music LIKE this" candidates the
+        // feature exists to surface.
+        const gw = gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0);
+        /*
+         * The family layer: this track's own families at full strength, their musicmap
+         * neighbours at ADJ_FACTOR. This is what makes one System of a Down vote reach
+         * every strain of metal in the library rather than only its exact tag twins.
+         */
+        const fams = familiesOf(gs);
+        let sw = 0;
+        const counted = new Set<Family>();
+        for (const f of fams) {
+          sw += w.get(`style|${f}`)?.w ?? 0;
+          counted.add(f);
+        }
+        for (const f of fams) {
+          for (const adj of ADJACENT[f]) {
+            if (counted.has(adj)) continue;
+            counted.add(adj);
+            sw += ADJ_FACTOR * (w.get(`style|${adj}`)?.w ?? 0);
           }
-          for (const f of fams) {
-            for (const adj of ADJACENT[f]) {
-              if (counted.has(adj)) continue;
-              counted.add(adj);
-              sw += ADJ_FACTOR * (w.get(`style|${adj}`)?.w ?? 0);
-            }
-          }
-          sw = Math.max(-STYLE_CLAMP, Math.min(STYLE_CLAMP, sw));
-          const era = eraOf(t.year);
-          const ew = era
-            ? Math.max(-ERA_CLAMP, Math.min(ERA_CLAMP, w.get(`era|${era.key}`)?.w ?? 0))
-            : 0;
-          const band = energyBandOf(t.energy);
-          const nw = band
-            ? Math.max(-ENERGY_CLAMP, Math.min(ENERGY_CLAMP, w.get(`energy|${band}`)?.w ?? 0))
-            : 0;
-          const score =
-            (w.get(`track|${String(t.id)}`)?.w ?? 0) +
-            (w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0) +
-            (w.get(`artist|${t.norm_artist}`)?.w ?? 0) +
-            gw +
-            sw +
-            ew +
-            nw;
-          return { t, score };
-        })
-        .filter((e) => e.score > HARD_NO);
+        }
+        const era = eraOf(t.year);
+        const ew = era ? (w.get(`era|${era.key}`)?.w ?? 0) : 0;
+        const band = energyBandOf(t.energy);
+        const nw = band ? (w.get(`energy|${band}`)?.w ?? 0) : 0;
+        return {
+          t,
+          gw,
+          sw,
+          ew,
+          nw,
+          aw: w.get(`artist|${t.norm_artist}`)?.w ?? 0,
+          alw: w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0,
+          tw: w.get(`track|${String(t.id)}`)?.w ?? 0,
+          cool: cooldown.get(t.norm_artist) ?? 0,
+        };
+      });
+
+      /*
+       * The veto, on the ABSOLUTE mood: somebody who has vetoed a decade twice, or this exact
+       * song, means it — that reading must not depend on what else happens to be in the pool.
+       * The clamps live here, where "how emphatically was this rejected" is the question.
+       */
+      const clamp = (v: number, c: number) => Math.max(-c, Math.min(c, v));
+      const vetoed = raw.filter(
+        (e) =>
+          clamp(e.gw, GENRE_CLAMP) +
+            clamp(e.sw, STYLE_CLAMP) +
+            clamp(e.ew, ERA_CLAMP) +
+            clamp(e.nw, ENERGY_CLAMP) +
+            e.aw +
+            e.alw +
+            e.tw >
+          HARD_NO,
+      );
+
+      /**
+       * Put a dimension on a scale the others can be compared with: how many standard
+       * deviations from the pool's average this candidate is. A dimension nobody differs on
+       * (a cold start, or an unanalysed library with no energy at all) has no spread and so
+       * contributes nothing rather than noise.
+       */
+      const normaliser = (values: number[]) => {
+        const mean = values.reduce((a, b) => a + b, 0) / (values.length || 1);
+        const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / (values.length || 1);
+        const sd = Math.sqrt(variance);
+        if (sd < 1e-9) return () => 0;
+        return (v: number) => clamp((v - mean) / sd, Z_CAP);
+      };
+      const zg = normaliser(vetoed.map((e) => e.gw));
+      const zs = normaliser(vetoed.map((e) => e.sw));
+      const ze = normaliser(vetoed.map((e) => e.ew));
+      const zn = normaliser(vetoed.map((e) => e.nw));
+      const za = normaliser(vetoed.map((e) => e.aw));
+      const zal = normaliser(vetoed.map((e) => e.alw));
+      const zt = normaliser(vetoed.map((e) => e.tw));
+
+      const scored = vetoed.map((e) => ({
+        t: e.t,
+        score:
+          IMPORTANCE.genre * zg(e.gw) +
+          IMPORTANCE.style * zs(e.sw) +
+          IMPORTANCE.era * ze(e.ew) +
+          IMPORTANCE.energy * zn(e.nw) +
+          IMPORTANCE.artist * za(e.aw) +
+          IMPORTANCE.album * zal(e.alw) +
+          IMPORTANCE.track * zt(e.tw) -
+          e.cool,
+      }));
 
       // Softmax sample without replacement, with the per-artist cap keeping variety honest.
       const picked: LibRow[] = [];
@@ -513,11 +745,34 @@ const plugin: CratePlugin = {
       addWeight(c.id, 'track', String(t.id), t.title, d.track);
       addWeight(c.id, 'album', `${t.norm_artist}|${t.norm_album}`, t.album_title, d.album);
       addWeight(c.id, 'artist', t.norm_artist, t.artist_name, d.artist * artistShare);
+
       const gs = genresFor(t, genresOf([t.norm_artist])).slice(0, 6);
-      for (const g of gs) addWeight(c.id, 'genre', g, g, d.genre);
-      // The family layer: the same vote at the super-genre scale, so kin genres light up.
-      const fams = familiesOf(gs).slice(0, 3);
-      for (const f of fams) addWeight(c.id, 'style', f, FAMILY_LABEL[f], d.style);
+      /*
+       * How loudly each tag gets to speak: rarer tags say more (specificity), and the FILE's
+       * own tags say more than Last.fm's view of the artist. Together these are what stop a
+       * stoner-metal vote from reading as a vote for the 55% of the library filed under rock.
+       */
+      const cp = corpus(c.id);
+      const ownTags = new Set(
+        (t.genres ? t.genres.split(', ') : []).map((g) => g.trim().toLowerCase()).filter(Boolean),
+      );
+      const pull = (g: string) =>
+        specificity(cp.genreDf.get(g) ?? 0, cp.n) * (ownTags.has(g) ? 1 : ARTIST_TAG_FACTOR);
+      for (const g of gs) addWeight(c.id, 'genre', g, g, d.genre * pull(g));
+      /*
+       * The family layer: the same vote at the super-genre scale, so kin genres light up. A
+       * family is discounted by its OWN coverage, and by whether the file or only the artist
+       * tags put the track there — so [metal, blues, rock] stops being three equal claims.
+       */
+      const famPull = new Map<Family, number>();
+      for (const g of gs) {
+        const f = familyOf(g);
+        if (!f) continue;
+        const p = specificity(cp.familyDf.get(f) ?? 0, cp.n) * (ownTags.has(g) ? 1 : ARTIST_TAG_FACTOR);
+        famPull.set(f, Math.max(famPull.get(f) ?? 0, p));
+      }
+      const fams = [...famPull.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+      for (const [f, p] of fams) addWeight(c.id, 'style', f, FAMILY_LABEL[f], d.style * p);
       const era = eraOf(t.year);
       if (era) addWeight(c.id, 'era', era.key, era.label, d.era);
       const band = energyBandOf(t.energy);
@@ -540,6 +795,7 @@ const plugin: CratePlugin = {
           artist: t.artist_name,
           album: t.album_title,
           genres: gs,
+          styles: fams.map(([f]) => FAMILY_LABEL[f]),
           era: era?.label ?? null,
           energy: band,
         },

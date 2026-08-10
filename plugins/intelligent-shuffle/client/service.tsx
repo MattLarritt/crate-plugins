@@ -41,7 +41,7 @@ export function IntelligentShuffleService() {
     // The new batch plays after whatever is currently last, so tell the planner — the
     // no-same-artist-twice rule has to hold across that seam too.
     const lastQueued = p.queue[p.queue.length - 1]?.trackId;
-    void plan(5, [...playedIds(), ...queued], lastQueued)
+    void plan(5, [...playedIds(), ...queued], lastQueued, playedIds())
       .then((r) => {
         if (isActive() && r.tracks.length) p.enqueue(r.tracks);
       })

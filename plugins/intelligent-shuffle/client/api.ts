@@ -21,9 +21,14 @@ export interface Mood {
   outOf: MoodEntry[];
 }
 
-/** afterTrackId = the track this batch will play after, so no artist repeats across the seam. */
-export const plan = (count: number, exclude: number[], afterTrackId?: number) =>
-  post<{ tracks: PlannedTrack[] }>('/api/ishuffle/plan', { count, exclude, afterTrackId });
+/**
+ * afterTrackId = the track this batch will play after, so no artist repeats across the seam.
+ * played = what the session has already played, OLDEST FIRST — the planner cools an artist
+ * down by how many songs ago they were on, which `exclude` cannot say because it mixes the
+ * played tracks with the ones still queued.
+ */
+export const plan = (count: number, exclude: number[], afterTrackId?: number, played?: number[]) =>
+  post<{ tracks: PlannedTrack[] }>('/api/ishuffle/plan', { count, exclude, afterTrackId, played });
 
 export const vote = (trackId: number, direction: 'more' | 'less') =>
   post<{

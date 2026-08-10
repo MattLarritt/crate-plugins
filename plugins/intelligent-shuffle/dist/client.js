@@ -27,7 +27,7 @@ var { usePlayer, playable } = window.crateHost.player;
 var { get, post, put, del } = window.crateHost.api;
 
 // plugins/intelligent-shuffle/client/api.ts
-var plan = (count, exclude, afterTrackId) => post("/api/ishuffle/plan", { count, exclude, afterTrackId });
+var plan = (count, exclude, afterTrackId, played2) => post("/api/ishuffle/plan", { count, exclude, afterTrackId, played: played2 });
 var vote = (trackId, direction) => post("/api/ishuffle/vote", { trackId, direction });
 var moodNow = () => get("/api/ishuffle/mood");
 var resetMood = () => post("/api/ishuffle/reset", {});
@@ -97,7 +97,7 @@ function IntelligentShufflePanel({ onClose, say }) {
   const next = p.queue[p.index + 1] ?? null;
   const redeal = useCallback(async () => {
     const exclude = [...playedIds(), ...p.current ? [p.current.trackId] : []];
-    const r = await plan(TAIL, exclude, p.current?.trackId);
+    const r = await plan(TAIL, exclude, p.current?.trackId, exclude);
     p.replaceUpcoming(r.tracks);
   }, [p]);
   const voteOn = (trackId, direction) => {
@@ -119,7 +119,7 @@ function IntelligentShufflePanel({ onClose, say }) {
     void (async () => {
       if (seed && p.current) await vote(p.current.trackId, "more").then((r2) => setMood(r2.mood));
       const exclude = p.current ? [p.current.trackId] : [];
-      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude, p.current?.trackId);
+      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude, p.current?.trackId, exclude);
       if (!r.tracks.length) {
         say("bad", "nothing to play \u2014 is your library empty?");
         return;
@@ -288,7 +288,7 @@ function IntelligentShuffleService() {
     fetching.current = true;
     const queued = p.queue.map((t) => t.trackId);
     const lastQueued = p.queue[p.queue.length - 1]?.trackId;
-    void plan(5, [...playedIds(), ...queued], lastQueued).then((r) => {
+    void plan(5, [...playedIds(), ...queued], lastQueued, playedIds()).then((r) => {
       if (isActive() && r.tracks.length) p.enqueue(r.tracks);
     }).catch(() => {
     }).finally(() => {
