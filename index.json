@@ -6,13 +6,6 @@
       "version": "1.4.0",
       "description": "Chord sheets and tabs for your songs, imported from Ultimate Guitar. Guitar or ukulele diagrams, and a transpose control for singing it in your own key.",
       "dir": "plugins/chords/dist"
-    },
-    {
-      "id": "intelligent-shuffle",
-      "name": "Intelligent Shuffle",
-      "version": "1.9.1",
-      "description": "A dynamic DJ for your library: vote more or less like this while it plays, and the queue re-deals to the mood. Reads each track's own genres, era and energy, and works out whether you mean the band or the vibe. Docks into the corner so the page stays usable behind it. Votes fade over hours, so it follows tonight, not last week.",
-      "dir": "plugins/intelligent-shuffle/dist"
     }
   ]
 }
