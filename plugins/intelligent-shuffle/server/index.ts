@@ -812,17 +812,46 @@ const plugin: CratePlugin = {
       });
 
       /*
-       * The veto, on the ABSOLUTE mood: somebody who has vetoed a decade twice, or this exact
-       * song, means it — that reading must not depend on what else happens to be in the pool.
-       * The clamps live here, where "how emphatically was this rejected" is the question.
+       * The veto: "the mood says no to THIS track".
+       *
+       * A PENALTY EVERY CANDIDATE SHARES IS NOT A REASON TO REJECT ANY OF THEM. That sounds
+       * obvious and this code got it wrong in a way that took the library down to 3% of itself.
+       *
+       * Era and energy are LOW-CARDINALITY: three energy bands, six decades. A handful of
+       * downvotes drives every value of both negative — at which point they have stopped
+       * discriminating entirely, because every candidate carries the same penalty. But applied
+       * as absolute numbers, era(−2) + energy(−2) = −4 clears HARD_NO(−3) on its own, so two
+       * dimensions that now contain no information vetoed everything that had a year and an
+       * analysed energy. Measured against the real library in exactly that state: 2,701 tracks
+       * became 82, none of them newer than 1989, and the DJ played the fourteen surviving Pixies
+       * tracks over and over because they also held the only positive artist and album weights.
+       * Genre never showed this because there are hundreds of genres and you cannot downvote
+       * them all.
+       *
+       * So the discriminating dimensions are CENTRED on the pool before they may veto: what
+       * counts is how much worse this track is than the alternatives, not its absolute score.
+       * When every candidate is penalised equally the term is zero and the dimension simply
+       * stops voting, which is the honest reading of "no information".
+       *
+       * Track, artist and album stay ABSOLUTE and uncentred. Those are specific and
+       * high-cardinality — "I vetoed this exact song twice" is a statement about that song and
+       * must keep working however the rest of the pool looks. This is the same principle the
+       * scoring below already applied by z-normalising every dimension across the candidates;
+       * the veto simply never got it, and that asymmetry was the bug.
        */
       const clamp = (v: number, c: number) => Math.max(-c, Math.min(c, v));
+      const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+      const mgw = mean(raw.map((e) => clamp(e.gw, GENRE_CLAMP)));
+      const msw = mean(raw.map((e) => clamp(e.sw, STYLE_CLAMP)));
+      const mew = mean(raw.map((e) => clamp(e.ew, ERA_CLAMP)));
+      const mnw = mean(raw.map((e) => clamp(e.nw, ENERGY_CLAMP)));
       const vetoed = raw.filter(
         (e) =>
-          clamp(e.gw, GENRE_CLAMP) +
-            clamp(e.sw, STYLE_CLAMP) +
-            clamp(e.ew, ERA_CLAMP) +
-            clamp(e.nw, ENERGY_CLAMP) +
+          clamp(e.gw, GENRE_CLAMP) -
+            mgw +
+            (clamp(e.sw, STYLE_CLAMP) - msw) +
+            (clamp(e.ew, ERA_CLAMP) - mew) +
+            (clamp(e.nw, ENERGY_CLAMP) - mnw) +
             e.aw +
             e.alw +
             e.tw >

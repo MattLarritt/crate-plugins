@@ -449,15 +449,20 @@ var plugin = {
         };
       });
       const clamp = (v, c2) => Math.max(-c2, Math.min(c2, v));
+      const mean = (xs) => xs.length ? xs.reduce((a, b2) => a + b2, 0) / xs.length : 0;
+      const mgw = mean(raw.map((e) => clamp(e.gw, GENRE_CLAMP)));
+      const msw = mean(raw.map((e) => clamp(e.sw, STYLE_CLAMP)));
+      const mew = mean(raw.map((e) => clamp(e.ew, ERA_CLAMP)));
+      const mnw = mean(raw.map((e) => clamp(e.nw, ENERGY_CLAMP)));
       const vetoed = raw.filter(
-        (e) => clamp(e.gw, GENRE_CLAMP) + clamp(e.sw, STYLE_CLAMP) + clamp(e.ew, ERA_CLAMP) + clamp(e.nw, ENERGY_CLAMP) + e.aw + e.alw + e.tw > HARD_NO
+        (e) => clamp(e.gw, GENRE_CLAMP) - mgw + (clamp(e.sw, STYLE_CLAMP) - msw) + (clamp(e.ew, ERA_CLAMP) - mew) + (clamp(e.nw, ENERGY_CLAMP) - mnw) + e.aw + e.alw + e.tw > HARD_NO
       );
       const normaliser = (values) => {
-        const mean = values.reduce((a, b2) => a + b2, 0) / (values.length || 1);
-        const variance = values.reduce((a, b2) => a + (b2 - mean) ** 2, 0) / (values.length || 1);
+        const mean2 = values.reduce((a, b2) => a + b2, 0) / (values.length || 1);
+        const variance = values.reduce((a, b2) => a + (b2 - mean2) ** 2, 0) / (values.length || 1);
         const sd = Math.sqrt(variance);
         if (sd < 1e-9) return () => 0;
-        return (v) => clamp((v - mean) / sd, Z_CAP);
+        return (v) => clamp((v - mean2) / sd, Z_CAP);
       };
       const zg = normaliser(vetoed.map((e) => e.gw));
       const zs = normaliser(vetoed.map((e) => e.sw));
