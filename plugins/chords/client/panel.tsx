@@ -764,6 +764,34 @@ export function ChordPanel({
     setPage((p) => Math.min(p, total - 1));
   }, [parsed, layout, box.h, box.w, showPreamble, compact]);
 
+  /*
+   * Lock the page behind while the panel is open.
+   *
+   * This panel covers the whole window, so a wheel scroll over it moving the app underneath is
+   * pure confusion — you scroll expecting the sheet to move and the library silently slides
+   * around behind a sheet that has not budged. Measured: the page went from 0 to 296px while the
+   * panel was open.
+   *
+   * overscroll-behavior alone cannot fix it. That only stops CHAINING out of a scrollable box
+   * once it hits its end, and on a wide screen the sheet does not scroll at all — it pages
+   * sideways — so the wheel was never the panel's to begin with and went straight to the
+   * document. Locking the body is the only thing that covers both layouts.
+   *
+   * The scrollbar width is compensated so the page does not jump sideways as it locks.
+   */
+  useEffect(() => {
+    const { body } = document;
+    const prevOverflow = body.style.overflow;
+    const prevPad = body.style.paddingRight;
+    const gap = window.innerWidth - document.documentElement.clientWidth;
+    body.style.overflow = 'hidden';
+    if (gap > 0) body.style.paddingRight = `${gap}px`;
+    return () => {
+      body.style.overflow = prevOverflow;
+      body.style.paddingRight = prevPad;
+    };
+  }, []);
+
   // Page with the arrow keys, the way somebody with a guitar in their lap would want to.
   useEffect(() => {
     if (editing || compact) return;

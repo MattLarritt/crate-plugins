@@ -11,7 +11,21 @@
 
 .chordpanel {
   position: fixed;
-  z-index: 150;
+  /*
+   * ABOVE the app header (170), unlike the inset sheet panels which sit at 150.
+   *
+   * This panel deliberately covers the header — see the note below about no inset and no gap at
+   * the top — so it has to out-stack it. At 150 the header painted straight over the panel's own
+   * header: the search field and the avatar sat on top of the Close button, and clicking Close
+   * hit the avatar instead. The panel looked fine and simply could not be dismissed.
+   *
+   * The inset panels (lyrics, the DJ) stay at 150 on purpose: they start at top: 72px, clear of
+   * the header, and the user menu has to be able to open over them.
+   */
+  z-index: 180;
+  /* Belt and braces with the body lock in panel.tsx: stops a scroll that starts inside the
+     sheet's own scroller from chaining out to the document when it reaches an end. */
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--bg2) 97%, transparent);
@@ -301,7 +315,8 @@
    pointer-events: none is load-bearing — see the note in chords.tsx. */
 .cpeek {
   position: fixed;
-  z-index: 160;
+  /* Above the panel it belongs to, which now sits above the app header. */
+  z-index: 190;
   pointer-events: none;
   background: color-mix(in srgb, var(--card) 97%, transparent);
   backdrop-filter: blur(10px);

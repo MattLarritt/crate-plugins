@@ -724,6 +724,18 @@ function ChordPanel({
     setPage((p) => Math.min(p, total - 1));
   }, [parsed, layout, box.h, box.w, showPreamble, compact]);
   useEffect(() => {
+    const { body } = document;
+    const prevOverflow = body.style.overflow;
+    const prevPad = body.style.paddingRight;
+    const gap = window.innerWidth - document.documentElement.clientWidth;
+    body.style.overflow = "hidden";
+    if (gap > 0) body.style.paddingRight = `${gap}px`;
+    return () => {
+      body.style.overflow = prevOverflow;
+      body.style.paddingRight = prevPad;
+    };
+  }, []);
+  useEffect(() => {
     if (editing || compact) return;
     const onKey = (e) => {
       if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
