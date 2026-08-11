@@ -23,34 +23,43 @@ export function IntelligentShuffleService() {
   }, [currentId]);
 
   /*
-   * Publish the play bar's real height so the panel can dock above it.
+   * Publish the real heights of the two things the docked panel has to fit between.
    *
-   * The panel is docked bottom-right and has to clear the play bar, but the bar's height is not
-   * a constant to hardcode: it reflows at narrow widths (transport wrapping, the touch button
-   * row appearing) and swings from about 120px to over 200px. A fixed offset that looked right
-   * on a desktop overlapped the bar by 80px in a 732px-wide window. So measure it.
+   * Neither is a constant to hardcode. The play bar reflows at narrow widths (transport
+   * wrapping, the touch row appearing) from ~120px to over 200px; the header does the same when
+   * the search box drops onto its own line, going from 88px to 114px. Both were guessed at
+   * first, and both guesses were wrong in the same direction: the panel sat 80px inside the play
+   * bar at 732px, and once a Skip button made it taller it pushed 26px up under the header at
+   * 600px. So measure them and let the CSS do arithmetic on real numbers.
    *
-   * A ResizeObserver rather than a resize listener, because the bar also changes height without
-   * the window changing size. Written to the root element as a CSS variable so the positioning
-   * stays in the stylesheet where the rest of the layout lives; the CSS keeps a 120px fallback
-   * for the moment before the first observation lands.
+   * ResizeObservers rather than a resize listener, because either can change height without the
+   * window changing size. Written to the root element as CSS variables so the positioning stays
+   * in the stylesheet with the rest of the layout; the CSS keeps fallbacks for the frame before
+   * the first observation lands.
    */
   useEffect(() => {
-    const bar = document.querySelector('.playbar');
     const root = document.documentElement;
-    if (!bar) {
-      root.style.removeProperty('--is-playbar-h');
-      return;
+    const watch: [string, string, Element | null][] = [
+      ['--is-playbar-h', '.playbar', document.querySelector('.playbar')],
+      ['--is-header-h', 'header.top', document.querySelector('header.top')],
+    ];
+    const observers: ResizeObserver[] = [];
+    for (const [prop, , el] of watch) {
+      if (!el) {
+        root.style.removeProperty(prop);
+        continue;
+      }
+      // The BORDER box, not contentRect: both elements carry vertical padding and a border, and
+      // clearing only the content box would leave the panel some 20px inside them.
+      const ro = new ResizeObserver(() => {
+        root.style.setProperty(prop, `${Math.round((el as HTMLElement).offsetHeight)}px`);
+      });
+      ro.observe(el);
+      observers.push(ro);
     }
-    // The BORDER box, not contentRect: the bar carries 10px of vertical padding and a 1px top
-    // border, and clearing only its content box would leave the panel 21px into it.
-    const ro = new ResizeObserver(() => {
-      root.style.setProperty('--is-playbar-h', `${Math.round((bar as HTMLElement).offsetHeight)}px`);
-    });
-    ro.observe(bar);
     return () => {
-      ro.disconnect();
-      root.style.removeProperty('--is-playbar-h');
+      for (const ro of observers) ro.disconnect();
+      for (const [prop] of watch) root.style.removeProperty(prop);
     };
   }, [!!p.current]);
 

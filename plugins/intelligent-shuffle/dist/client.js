@@ -204,6 +204,10 @@ function IntelligentShufflePanel({ onClose, say }) {
               ]
             }
           )
+        ] }),
+        /* @__PURE__ */ jsxs("button", { className: "isskip", disabled: busy, onClick: () => p.next(true), children: [
+          /* @__PURE__ */ jsx("span", { className: "mark", children: "\u21A6" }),
+          "Skip"
         ] })
       ] }),
       /* @__PURE__ */ jsx("div", { className: "isnext muted", children: next ? /* @__PURE__ */ jsxs(Fragment2, { children: [
@@ -276,19 +280,26 @@ function IntelligentShuffleService() {
     if (isActive() && currentId) notePlayed(currentId);
   }, [currentId]);
   useEffect(() => {
-    const bar = document.querySelector(".playbar");
     const root = document.documentElement;
-    if (!bar) {
-      root.style.removeProperty("--is-playbar-h");
-      return;
+    const watch = [
+      ["--is-playbar-h", ".playbar", document.querySelector(".playbar")],
+      ["--is-header-h", "header.top", document.querySelector("header.top")]
+    ];
+    const observers = [];
+    for (const [prop, , el] of watch) {
+      if (!el) {
+        root.style.removeProperty(prop);
+        continue;
+      }
+      const ro = new ResizeObserver(() => {
+        root.style.setProperty(prop, `${Math.round(el.offsetHeight)}px`);
+      });
+      ro.observe(el);
+      observers.push(ro);
     }
-    const ro = new ResizeObserver(() => {
-      root.style.setProperty("--is-playbar-h", `${Math.round(bar.offsetHeight)}px`);
-    });
-    ro.observe(bar);
     return () => {
-      ro.disconnect();
-      root.style.removeProperty("--is-playbar-h");
+      for (const ro of observers) ro.disconnect();
+      for (const [prop] of watch) root.style.removeProperty(prop);
     };
   }, [!!p.current]);
   useEffect(() => {

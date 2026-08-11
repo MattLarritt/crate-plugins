@@ -173,6 +173,21 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
                   Less like this
                 </button>
               </div>
+              {/*
+                * Skip: move on, no opinion. Deliberately NOT a third vote — "less like this"
+                * already means "not this vibe" and re-deals the queue, so a listener who only
+                * wants the next song had to either lie to the DJ or reach past the panel to the
+                * play bar. This is the neutral option those two were missing, which is why it
+                * is quieter than the pair above it rather than a third big button.
+                *
+                * userInitiated: true so the core reports it as a SKIP rather than a play. A
+                * silent skip would otherwise look like a song you sat through, and the DJ reads
+                * the play log.
+                */}
+              <button className="isskip" disabled={busy} onClick={() => p.next(true)}>
+                <span className="mark">↦</span>
+                Skip
+              </button>
             </div>
           )}
 
