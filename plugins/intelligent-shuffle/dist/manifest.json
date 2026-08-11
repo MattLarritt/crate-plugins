@@ -1,7 +1,7 @@
 {
   "id": "intelligent-shuffle",
   "name": "Intelligent Shuffle",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "A dynamic DJ for your library: vote more or less like this while it plays, and the queue re-deals to the mood. Reads each track's own genres, era and energy, takes requests in plain words, and works out whether you mean the band or the vibe. Votes fade over hours, so it follows tonight, not last week.",
   "server": "server.js",
   "client": "client.js",

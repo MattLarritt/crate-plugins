@@ -107,6 +107,14 @@ const IMPORTANCE = {
   artist: 0.5,
   album: 0.3,
   track: 0.4,
+  /*
+   * How close a candidate is to the ghost track. Weighted alongside the genre layer rather than
+   * replacing it, for two reasons: most of the library has no characteristic profile yet, so a
+   * ghost-only DJ would play only the analysed part of it; and the genre layer measurably works
+   * (93–98% on target), so the safe way to add an axis is additively. Scaled by ghostInfluence,
+   * so with no votes it contributes nothing at all.
+   */
+  ghost: 1.2,
 } as const;
 
 /** Z-scores past three standard deviations are outliers, not stronger opinions. */
@@ -236,6 +244,57 @@ const REVERSAL_BOOST = 3;
 const ARTIST_COOLDOWN = 6;
 const COOLDOWN_HALF_SONGS = 2.5;
 
+/**
+ * THE GHOST TRACK: the DJ's target in characteristic space.
+ *
+ * The genre weights answer "what kind of music"; the ghost answers "what should it FEEL like".
+ * It is a point in the same fifty-five dimensional space every analysed track occupies, and the
+ * next songs are the ones nearest it.
+ *
+ * WHERE IT STARTS. Not at 0.5 everywhere, which sounds neutral and is not: all-0.5 is a specific
+ * location, and the tracks nearest it are the least distinctive ones in the library — a DJ seeded
+ * that way would open with your most forgettable music. It starts as a copy of the track the
+ * session began from, and until a vote has shaped it, it has NO say at all (see ghostInfluence) —
+ * the same rule the weights table follows, where an empty mood means shuffle rather than a
+ * confident opinion about nothing.
+ *
+ * HOW IT MOVES. Exponentially, toward a liked track and away from a disliked one:
+ *
+ *     like:    ghost += RATE × (track − ghost)
+ *     dislike: ghost −= RATE × (track − ghost)
+ *
+ * The form matters more than it looks. Because each step is proportional to the DIFFERENCE, a
+ * vote moves the ghost most on the dimensions where it and the track already disagree, and not at
+ * all where they match. Skipping a track that shared your energy but was far darker therefore
+ * gives you "less dark" and leaves energy alone — where a naive "move away on everything" would
+ * nudge all fifty-five dimensions from one skip, which is the same mistake the genre layer made
+ * before specificity weighting fixed it.
+ */
+const GHOST_RATE_LIKE = 0.3;
+/**
+ * A dislike moves the ghost half as far as a like, and deliberately so.
+ *
+ * The two votes do not carry the same information. "More like this" names a destination; "less
+ * like this" only rules out a direction, and says nothing about where to go instead. Measured on
+ * a real vote — a quiet Verve track downvoted against a Rammstein ghost — a symmetric rate drove
+ * aggression, punch, defiance and intensity all the way to 1.00 from ONE press, because each step
+ * is proportional to a gap that was already wide. A ghost pinned to the corners of the space is a
+ * caricature, and the tracks nearest it are the most extreme things in the library rather than the
+ * ones somebody wants.
+ */
+const GHOST_RATE_DISLIKE = 0.15;
+
+/**
+ * How much say the ghost has, as evidence accumulates.
+ *
+ * CONFIDENCE decays here, not position. Decaying the position would walk the ghost back toward
+ * the bland centre of the library, which is a place nobody asked to go; decaying its influence
+ * just makes a stale mood quietly stop having opinions. Half strength at two votes, near full by
+ * six — one vote nudges, a session steers.
+ */
+const ghostInfluence = (votes: number): number =>
+  votes <= 0 ? 0 : Math.min(1, 1 - Math.pow(0.5, votes / 2));
+
 type Kind = 'artist' | 'album' | 'track' | 'genre' | 'style' | 'era' | 'energy';
 
 /** crate's shared energy vocabulary: <0.35 chill, <0.65 medium, else high. */
@@ -322,6 +381,27 @@ const plugin: CratePlugin = {
         at          INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS ishuffle_votes_user ON ishuffle_votes (user_id, norm_artist, at);
+
+      -- THE GHOST TRACK. One row per (user, characteristic): a point in the same space every
+      -- analysed track occupies, which the next songs are chosen near. The votes column counts
+      -- how many votes have shaped it, which is what scales its influence (see ghostInfluence).
+      -- No backticks in here: this block is a JS template literal and one would end it.
+      --
+      -- A row per dimension rather than a JSON blob, so the ghost is inspectable in SQL and the
+      -- panel can read the strongest dimensions with an ORDER BY rather than parsing anything.
+      CREATE TABLE IF NOT EXISTS ishuffle_ghost (
+        user_id    INTEGER NOT NULL,
+        key        TEXT    NOT NULL,
+        value      REAL    NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, key)
+      );
+      CREATE TABLE IF NOT EXISTS ishuffle_ghost_meta (
+        user_id    INTEGER PRIMARY KEY,
+        votes      INTEGER NOT NULL DEFAULT 0,
+        seeded_at  INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
     `);
   },
 
@@ -357,6 +437,106 @@ const plugin: CratePlugin = {
       const map = new Map<string, { w: number; label: string }>();
       for (const r of rows) map.set(`${r.kind}|${r.key}`, { w: decayed(r.weight, r.updated_at), label: r.label });
       return map;
+    };
+
+    /** The ghost's current position and how much evidence stands behind it. */
+    const ghost = (userId: number): { profile: Record<string, number>; votes: number } => {
+      const rows = ctx.db
+        .prepare('SELECT key, value FROM ishuffle_ghost WHERE user_id = ?')
+        .all(userId) as { key: string; value: number }[];
+      const meta = ctx.db
+        .prepare('SELECT votes FROM ishuffle_ghost_meta WHERE user_id = ?')
+        .get(userId) as { votes: number } | undefined;
+      return {
+        profile: Object.fromEntries(rows.map((r) => [r.key, r.value])),
+        votes: meta?.votes ?? 0,
+      };
+    };
+
+    const putGhost = ctx.db.prepare(
+      `INSERT INTO ishuffle_ghost (user_id, key, value, updated_at) VALUES (?,?,?,?)
+       ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    );
+
+    /**
+     * Seed the ghost from a track, WITHOUT counting it as a vote.
+     *
+     * Starting a session from a song says "something like this", which is a position but not yet
+     * evidence — so the ghost sits exactly on that track and still has no influence until somebody
+     * actually votes. That distinction is what stops a single Start-from-this-song from steering as
+     * hard as a deliberate run of likes.
+     */
+    const seedGhost = (userId: number, trackId: number): boolean => {
+      const v = ctx.characteristics.vectorOf(trackId);
+      if (!v || v.size === 0) return false;
+      const t = now();
+      const tx = ctx.db.transaction(() => {
+        ctx.db.prepare('DELETE FROM ishuffle_ghost WHERE user_id = ?').run(userId);
+        for (const [key, value] of v) putGhost.run(userId, key, value, t);
+        ctx.db
+          .prepare(
+            `INSERT INTO ishuffle_ghost_meta (user_id, votes, seeded_at, updated_at) VALUES (?,0,?,?)
+             ON CONFLICT(user_id) DO UPDATE SET votes = 0, seeded_at = excluded.seeded_at, updated_at = excluded.updated_at`,
+          )
+          .run(userId, t, t);
+      });
+      tx();
+      return true;
+    };
+
+    /**
+     * Move the ghost toward a liked track, or away from a disliked one.
+     *
+     * Dimensions the ghost has never held are ADOPTED from the track on a like (there is nothing
+     * to move away from yet) and ignored on a dislike — pushing away from a value you have no
+     * opinion about would invent one, in whatever direction that track happened to sit.
+     */
+    const moveGhost = (userId: number, trackId: number, direction: 'more' | 'less'): boolean => {
+      const v = ctx.characteristics.vectorOf(trackId);
+      if (!v || v.size === 0) return false;
+      const current = ghost(userId).profile;
+      const t = now();
+      const tx = ctx.db.transaction(() => {
+        for (const [key, score] of v) {
+          const held = current[key];
+          if (held === undefined) {
+            if (direction === 'less') continue;
+            putGhost.run(userId, key, score, t);
+            continue;
+          }
+          const rate = direction === 'more' ? GHOST_RATE_LIKE : GHOST_RATE_DISLIKE;
+          const step = rate * (score - held);
+          const next = direction === 'more' ? held + step : held - step;
+          putGhost.run(userId, key, Math.max(0, Math.min(1, next)), t);
+        }
+        ctx.db
+          .prepare(
+            `INSERT INTO ishuffle_ghost_meta (user_id, votes, seeded_at, updated_at) VALUES (?,1,?,?)
+             ON CONFLICT(user_id) DO UPDATE SET votes = votes + 1, updated_at = excluded.updated_at`,
+          )
+          .run(userId, t, t);
+      });
+      tx();
+      return true;
+    };
+
+    /**
+     * The ghost, in a form a person can read: the dimensions it has the strongest opinion about.
+     *
+     * Ranked by distance from the midpoint rather than by value, because a ghost sitting at
+     * danceability 0.05 is saying something as loudly as one at atmosphere 0.95 — "definitely not
+     * that" is an opinion. `say` is how much of the DJ's decision it currently accounts for, so
+     * the panel can be honest about a ghost that exists but is not yet steering.
+     */
+    const ghostSummary = (
+      userId: number,
+    ): { say: number; votes: number; wants: { key: string; value: number; high: boolean }[] } => {
+      const g = ghost(userId);
+      const wants = Object.entries(g.profile)
+        .map(([key, value]) => ({ key, value, high: value >= 0.5 }))
+        .sort((a, b) => Math.abs(b.value - 0.5) - Math.abs(a.value - 0.5))
+        .slice(0, 6);
+      return { say: Math.round(ghostInfluence(g.votes) * 100) / 100, votes: g.votes, wants };
     };
 
     /** Genres per artist, for the artists asked about. The fallback when a file names none. */
@@ -506,7 +686,15 @@ const plugin: CratePlugin = {
         exclude?: unknown;
         afterTrackId?: unknown;
         played?: unknown;
+        seedFrom?: unknown;
       };
+      /*
+       * A session starting from a song places the ghost on that song — a position, not evidence,
+       * so it still has no influence until somebody votes. Sent only on the first deal of a
+       * session; a top-up must not keep re-seeding and wiping the votes that have shaped it.
+       */
+      const seedFrom = Number(b.seedFrom) || 0;
+      if (seedFrom && ctx.characteristics.enabled()) seedGhost(c.id, seedFrom);
       const count = Math.min(Math.max(Number(b.count) || 6, 1), 30);
       const exclude = new Set(Array.isArray(b.exclude) ? b.exclude.map(Number) : []);
       // What this session has already played, oldest first. `exclude` cannot answer this: it
@@ -565,6 +753,21 @@ const plugin: CratePlugin = {
        * UNCLAMPED on purpose: the clamps below serve the veto, and the normalisation that
        * follows serves the ranking. Two jobs that used to be one, badly.
        */
+      /*
+       * Every candidate's closeness to the ghost, in one pass over the cached vectors.
+       *
+       * Absent from this map = the track has no profile, or too little overlap to judge. Those
+       * candidates take the pool MEAN below rather than a zero, so an unanalysed track is neither
+       * rewarded nor punished for it — with most of the library still unanalysed, penalising them
+       * would quietly reduce the DJ to the part that has been through the classifier.
+       */
+      const g = ghost(c.id);
+      const ghostSay = ghostInfluence(g.votes);
+      const ghostScores =
+        ghostSay > 0 && ctx.characteristics.enabled()
+          ? ctx.characteristics.scoreAgainst(g.profile)
+          : new Map<number, number>();
+
       const raw = pool.map((t) => {
         const gs = genresFor(t, genres);
         // Sum of matched genre weights, not an average: averaging diluted a two-of-four match
@@ -600,6 +803,7 @@ const plugin: CratePlugin = {
           sw,
           ew,
           nw,
+          gh: ghostScores.get(t.id),
           aw: w.get(`artist|${t.norm_artist}`)?.w ?? 0,
           alw: w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0,
           tw: w.get(`track|${String(t.id)}`)?.w ?? 0,
@@ -645,6 +849,13 @@ const plugin: CratePlugin = {
       const za = normaliser(vetoed.map((e) => e.aw));
       const zal = normaliser(vetoed.map((e) => e.alw));
       const zt = normaliser(vetoed.map((e) => e.tw));
+      /*
+       * The ghost dimension is normalised over the candidates that HAVE a profile, and anything
+       * without one is handed the mean — which is exactly "no information", the neutral position
+       * in a z-scored dimension.
+       */
+      const withGhost = vetoed.map((e) => e.gh).filter((x): x is number => x !== undefined);
+      const zgh = normaliser(withGhost);
 
       const scored = vetoed.map((e) => ({
         t: e.t,
@@ -655,7 +866,9 @@ const plugin: CratePlugin = {
           IMPORTANCE.energy * zn(e.nw) +
           IMPORTANCE.artist * za(e.aw) +
           IMPORTANCE.album * zal(e.alw) +
-          IMPORTANCE.track * zt(e.tw) -
+          IMPORTANCE.track * zt(e.tw) +
+          // Scaled by evidence: nothing at zero votes, full say after about six.
+          IMPORTANCE.ghost * ghostSay * (e.gh === undefined ? 0 : zgh(e.gh)) -
           e.cool,
       }));
 
@@ -778,6 +991,14 @@ const plugin: CratePlugin = {
       const band = energyBandOf(t.energy);
       if (band) addWeight(c.id, 'energy', band, `${band} energy`, d.energy);
 
+      /*
+       * The ghost moves on the same vote that writes the weights. Two axes from one press: the
+       * weights learn what KIND of music, the ghost learns what it should feel like. A track with
+       * no characteristic profile simply leaves the ghost alone — the genre half still works, which
+       * is why the two are additive rather than one replacing the other.
+       */
+      const ghostMoved = ctx.characteristics.enabled() && moveGhost(c.id, t.id, direction);
+
       db.prepare(
         'INSERT INTO ishuffle_votes (user_id, track_id, norm_artist, direction, at) VALUES (?, ?, ?, ?, ?)',
       ).run(c.id, t.id, t.norm_artist, direction, now());
@@ -791,6 +1012,7 @@ const plugin: CratePlugin = {
 
       return {
         ok: true,
+        ghost: ghostMoved ? ghostSummary(c.id) : null,
         applied: {
           artist: t.artist_name,
           album: t.album_title,
@@ -807,7 +1029,7 @@ const plugin: CratePlugin = {
       const c = need(req, reply);
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: 'a token caller has no library' });
-      return { mood: mood(c.id) };
+      return { mood: mood(c.id), ghost: ctx.characteristics.enabled() ? ghostSummary(c.id) : null };
     });
 
     /**
@@ -1002,6 +1224,9 @@ const plugin: CratePlugin = {
       db.prepare('DELETE FROM ishuffle_weights WHERE user_id = ?').run(c.id);
       // The vote log seeds the artist escalation; a fresh mind forgets that pattern too.
       db.prepare('DELETE FROM ishuffle_votes WHERE user_id = ?').run(c.id);
+      // And the ghost: a fresh mind has no target, which is different from a target of 0.5.
+      db.prepare('DELETE FROM ishuffle_ghost WHERE user_id = ?').run(c.id);
+      db.prepare('DELETE FROM ishuffle_ghost_meta WHERE user_id = ?').run(c.id);
       return { ok: true };
     });
   },

@@ -27,7 +27,13 @@ var { usePlayer, playable } = window.crateHost.player;
 var { get, post, put, del } = window.crateHost.api;
 
 // plugins/intelligent-shuffle/client/api.ts
-var plan = (count, exclude, afterTrackId, played2) => post("/api/ishuffle/plan", { count, exclude, afterTrackId, played: played2 });
+var plan = (count, exclude, afterTrackId, played2, seedFrom) => post("/api/ishuffle/plan", {
+  count,
+  exclude,
+  afterTrackId,
+  played: played2,
+  seedFrom
+});
 var vote = (trackId, direction) => post("/api/ishuffle/vote", { trackId, direction });
 var moodNow = () => get("/api/ishuffle/mood");
 var resetMood = () => post("/api/ishuffle/reset", {});
@@ -88,11 +94,16 @@ function IntelligentShufflePanel({ onClose, say }) {
   const p = usePlayer();
   useSyncExternalStore(subscribe, getVersion);
   const [mood, setMood] = useState(null);
+  const [ghost, setGhost] = useState(null);
   const [busy, setBusy] = useState(false);
   const [saying, setSaying] = useState("");
   const active2 = isActive();
   useEffect(() => {
-    void moodNow().then((r) => setMood(r.mood)).catch(() => setMood(null));
+    void moodNow().then((r) => {
+      setMood(r.mood);
+      if (r.ghost !== void 0) setGhost(r.ghost);
+      setGhost(r.ghost ?? null);
+    }).catch(() => setMood(null));
   }, []);
   const next = p.queue[p.index + 1] ?? null;
   const redeal = useCallback(async () => {
@@ -119,7 +130,13 @@ function IntelligentShufflePanel({ onClose, say }) {
     void (async () => {
       if (seed && p.current) await vote(p.current.trackId, "more").then((r2) => setMood(r2.mood));
       const exclude = p.current ? [p.current.trackId] : [];
-      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude, p.current?.trackId, exclude);
+      const r = await plan(
+        seed || p.current ? TAIL : TAIL + 1,
+        exclude,
+        p.current?.trackId,
+        exclude,
+        p.current?.trackId
+      );
       if (!r.tracks.length) {
         say("bad", "nothing to play \u2014 is your library empty?");
         return;
@@ -198,6 +215,17 @@ function IntelligentShufflePanel({ onClose, say }) {
         " \u2014 ",
         next.artistName
       ] }) : /* @__PURE__ */ jsx("span", { className: "k", children: "finding what's next\u2026" }) }),
+      ghost && ghost.wants.length > 0 && ghost.say > 0 && /* @__PURE__ */ jsx("div", { className: "ismood", children: /* @__PURE__ */ jsxs("div", { className: "isrow", children: [
+        /* @__PURE__ */ jsx("span", { className: "k muted", children: "Sounds like" }),
+        ghost.wants.map((wd) => /* @__PURE__ */ jsxs("span", { className: `ischip ${wd.high ? "in" : "out"}`, children: [
+          wd.high ? "" : "less ",
+          wd.key.replace(/_/g, " ")
+        ] }, wd.key)),
+        /* @__PURE__ */ jsxs("span", { className: "k muted", children: [
+          Math.round(ghost.say * 100),
+          "% of the choice"
+        ] })
+      ] }) }),
       mood && (mood.into.length > 0 || mood.outOf.length > 0) && /* @__PURE__ */ jsxs("div", { className: "ismood", children: [
         mood.into.length > 0 && /* @__PURE__ */ jsxs("div", { className: "isrow", children: [
           /* @__PURE__ */ jsx("span", { className: "k muted", children: "Leaning into" }),

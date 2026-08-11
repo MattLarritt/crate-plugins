@@ -10,6 +10,14 @@ export interface PlannedTrack {
   durationS: number | null;
 }
 
+/** What the ghost track currently wants, and how much of the DJ's decision it accounts for. */
+export interface Ghost {
+  /** 0..1 — the share of the choice the ghost is responsible for right now. */
+  say: number;
+  votes: number;
+  wants: { key: string; value: number; high: boolean }[];
+}
+
 export interface MoodEntry {
   kind: 'artist' | 'album' | 'track' | 'genre' | 'style' | 'era' | 'energy';
   label: string;
@@ -27,8 +35,25 @@ export interface Mood {
  * down by how many songs ago they were on, which `exclude` cannot say because it mixes the
  * played tracks with the ones still queued.
  */
-export const plan = (count: number, exclude: number[], afterTrackId?: number, played?: number[]) =>
-  post<{ tracks: PlannedTrack[] }>('/api/ishuffle/plan', { count, exclude, afterTrackId, played });
+/**
+ * seedFrom places the GHOST TRACK on a song at the start of a session — a position to steer from,
+ * not evidence, so it does not count as a vote. Sent on the first deal only: a top-up that
+ * re-seeded would wipe the votes that have shaped it since.
+ */
+export const plan = (
+  count: number,
+  exclude: number[],
+  afterTrackId?: number,
+  played?: number[],
+  seedFrom?: number,
+) =>
+  post<{ tracks: PlannedTrack[] }>('/api/ishuffle/plan', {
+    count,
+    exclude,
+    afterTrackId,
+    played,
+    seedFrom,
+  });
 
 export const vote = (trackId: number, direction: 'more' | 'less') =>
   post<{
@@ -43,9 +68,11 @@ export const vote = (trackId: number, direction: 'more' | 'less') =>
       energy?: 'chill' | 'medium' | 'high' | null;
     };
     mood: Mood;
+    /** Null when the voted track has no characteristic profile, so the ghost did not move. */
+    ghost?: Ghost | null;
   }>('/api/ishuffle/vote', { trackId, direction });
 
-export const moodNow = () => get<{ mood: Mood }>('/api/ishuffle/mood');
+export const moodNow = () => get<{ mood: Mood; ghost: Ghost | null }>('/api/ishuffle/mood');
 
 export const resetMood = () => post<{ ok: true }>('/api/ishuffle/reset', {});
 

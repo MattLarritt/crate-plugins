@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { usePlayer } from 'crate/player';
 import type { PanelProps } from '../../../types/contract';
-import { moodNow, plan, resetMood, saveMoodPlaylist, sayToDj, vote, type Mood } from './api';
+import { moodNow, plan, resetMood, saveMoodPlaylist, sayToDj, vote, type Ghost, type Mood } from './api';
 import { getVersion, isActive, playedIds, startSession, stopSession, subscribe } from './session';
 
 /**
@@ -27,13 +27,18 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
   const p = usePlayer();
   useSyncExternalStore(subscribe, getVersion);
   const [mood, setMood] = useState<Mood | null>(null);
+  const [ghost, setGhost] = useState<Ghost | null>(null);
   const [busy, setBusy] = useState(false);
   const [saying, setSaying] = useState('');
   const active = isActive();
 
   useEffect(() => {
     void moodNow()
-      .then((r) => setMood(r.mood))
+      .then((r) => {
+        setMood(r.mood);
+        if (r.ghost !== undefined) setGhost(r.ghost);
+        setGhost(r.ghost ?? null);
+      })
       .catch(() => setMood(null));
   }, []);
 
@@ -71,7 +76,18 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
     void (async () => {
       if (seed && p.current) await vote(p.current.trackId, 'more').then((r) => setMood(r.mood));
       const exclude = p.current ? [p.current.trackId] : [];
-      const r = await plan(seed || p.current ? TAIL : TAIL + 1, exclude, p.current?.trackId, exclude);
+      /*
+       * The ghost starts on the song we started from, when there is one. Deliberately not at 0.5
+       * everywhere: that is the least distinctive point in the library, so a DJ seeded there opens
+       * with the most forgettable music somebody owns.
+       */
+      const r = await plan(
+        seed || p.current ? TAIL : TAIL + 1,
+        exclude,
+        p.current?.trackId,
+        exclude,
+        p.current?.trackId,
+      );
       if (!r.tracks.length) {
         say('bad', 'nothing to play — is your library empty?');
         return;
@@ -172,6 +188,29 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
               <span className="k">finding what's next…</span>
             )}
           </div>
+
+          {/*
+            * What the ghost wants, when it has enough evidence to want anything. Shown as
+            * "more/less <dimension>" rather than as numbers, because the useful reading is the
+            * DIRECTION — and the share is stated plainly so a ghost that exists but is not yet
+            * steering does not look like it is.
+            */}
+          {ghost && ghost.wants.length > 0 && ghost.say > 0 && (
+            <div className="ismood">
+              <div className="isrow">
+                <span className="k muted">Sounds like</span>
+                {ghost.wants.map((wd) => (
+                  <span key={wd.key} className={`ischip ${wd.high ? 'in' : 'out'}`}>
+                    {wd.high ? '' : 'less '}
+                    {wd.key.replace(/_/g, ' ')}
+                  </span>
+                ))}
+                <span className="k muted">
+                  {Math.round(ghost.say * 100)}% of the choice
+                </span>
+              </div>
+            </div>
+          )}
 
           {mood && (mood.into.length > 0 || mood.outOf.length > 0) && (
             <div className="ismood">

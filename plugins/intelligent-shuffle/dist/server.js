@@ -116,7 +116,15 @@ var IMPORTANCE = {
   energy: 0.4,
   artist: 0.5,
   album: 0.3,
-  track: 0.4
+  track: 0.4,
+  /*
+   * How close a candidate is to the ghost track. Weighted alongside the genre layer rather than
+   * replacing it, for two reasons: most of the library has no characteristic profile yet, so a
+   * ghost-only DJ would play only the analysed part of it; and the genre layer measurably works
+   * (93–98% on target), so the safe way to add an axis is additively. Scaled by ghostInfluence,
+   * so with no votes it contributes nothing at all.
+   */
+  ghost: 1.2
 };
 var Z_CAP = 3;
 var PER_ARTIST_CAP = 1;
@@ -135,6 +143,9 @@ var WEIGHT_CEILING = 10;
 var REVERSAL_BOOST = 3;
 var ARTIST_COOLDOWN = 6;
 var COOLDOWN_HALF_SONGS = 2.5;
+var GHOST_RATE_LIKE = 0.3;
+var GHOST_RATE_DISLIKE = 0.15;
+var ghostInfluence = (votes) => votes <= 0 ? 0 : Math.min(1, 1 - Math.pow(0.5, votes / 2));
 var energyBandOf = (energy) => {
   if (energy == null || energy < 0) return null;
   if (energy < 0.35) return "chill";
@@ -186,6 +197,27 @@ var plugin = {
         at          INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS ishuffle_votes_user ON ishuffle_votes (user_id, norm_artist, at);
+
+      -- THE GHOST TRACK. One row per (user, characteristic): a point in the same space every
+      -- analysed track occupies, which the next songs are chosen near. The votes column counts
+      -- how many votes have shaped it, which is what scales its influence (see ghostInfluence).
+      -- No backticks in here: this block is a JS template literal and one would end it.
+      --
+      -- A row per dimension rather than a JSON blob, so the ghost is inspectable in SQL and the
+      -- panel can read the strongest dimensions with an ORDER BY rather than parsing anything.
+      CREATE TABLE IF NOT EXISTS ishuffle_ghost (
+        user_id    INTEGER NOT NULL,
+        key        TEXT    NOT NULL,
+        value      REAL    NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, key)
+      );
+      CREATE TABLE IF NOT EXISTS ishuffle_ghost_meta (
+        user_id    INTEGER PRIMARY KEY,
+        votes      INTEGER NOT NULL DEFAULT 0,
+        seeded_at  INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
     `);
   },
   routes(app, ctx) {
@@ -206,6 +238,64 @@ var plugin = {
       const map = /* @__PURE__ */ new Map();
       for (const r of rows) map.set(`${r.kind}|${r.key}`, { w: decayed(r.weight, r.updated_at), label: r.label });
       return map;
+    };
+    const ghost = (userId) => {
+      const rows = ctx.db.prepare("SELECT key, value FROM ishuffle_ghost WHERE user_id = ?").all(userId);
+      const meta = ctx.db.prepare("SELECT votes FROM ishuffle_ghost_meta WHERE user_id = ?").get(userId);
+      return {
+        profile: Object.fromEntries(rows.map((r) => [r.key, r.value])),
+        votes: meta?.votes ?? 0
+      };
+    };
+    const putGhost = ctx.db.prepare(
+      `INSERT INTO ishuffle_ghost (user_id, key, value, updated_at) VALUES (?,?,?,?)
+       ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    );
+    const seedGhost = (userId, trackId) => {
+      const v = ctx.characteristics.vectorOf(trackId);
+      if (!v || v.size === 0) return false;
+      const t = now();
+      const tx = ctx.db.transaction(() => {
+        ctx.db.prepare("DELETE FROM ishuffle_ghost WHERE user_id = ?").run(userId);
+        for (const [key, value] of v) putGhost.run(userId, key, value, t);
+        ctx.db.prepare(
+          `INSERT INTO ishuffle_ghost_meta (user_id, votes, seeded_at, updated_at) VALUES (?,0,?,?)
+             ON CONFLICT(user_id) DO UPDATE SET votes = 0, seeded_at = excluded.seeded_at, updated_at = excluded.updated_at`
+        ).run(userId, t, t);
+      });
+      tx();
+      return true;
+    };
+    const moveGhost = (userId, trackId, direction) => {
+      const v = ctx.characteristics.vectorOf(trackId);
+      if (!v || v.size === 0) return false;
+      const current = ghost(userId).profile;
+      const t = now();
+      const tx = ctx.db.transaction(() => {
+        for (const [key, score] of v) {
+          const held = current[key];
+          if (held === void 0) {
+            if (direction === "less") continue;
+            putGhost.run(userId, key, score, t);
+            continue;
+          }
+          const rate = direction === "more" ? GHOST_RATE_LIKE : GHOST_RATE_DISLIKE;
+          const step = rate * (score - held);
+          const next = direction === "more" ? held + step : held - step;
+          putGhost.run(userId, key, Math.max(0, Math.min(1, next)), t);
+        }
+        ctx.db.prepare(
+          `INSERT INTO ishuffle_ghost_meta (user_id, votes, seeded_at, updated_at) VALUES (?,1,?,?)
+             ON CONFLICT(user_id) DO UPDATE SET votes = votes + 1, updated_at = excluded.updated_at`
+        ).run(userId, t, t);
+      });
+      tx();
+      return true;
+    };
+    const ghostSummary = (userId) => {
+      const g = ghost(userId);
+      const wants = Object.entries(g.profile).map(([key, value]) => ({ key, value, high: value >= 0.5 })).sort((a, b) => Math.abs(b.value - 0.5) - Math.abs(a.value - 0.5)).slice(0, 6);
+      return { say: Math.round(ghostInfluence(g.votes) * 100) / 100, votes: g.votes, wants };
     };
     const genresOf = (artists) => {
       const out = /* @__PURE__ */ new Map();
@@ -290,6 +380,8 @@ var plugin = {
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: "a token caller has no library" });
       const b = req.body ?? {};
+      const seedFrom = Number(b.seedFrom) || 0;
+      if (seedFrom && ctx.characteristics.enabled()) seedGhost(c.id, seedFrom);
       const count = Math.min(Math.max(Number(b.count) || 6, 1), 30);
       const exclude = new Set(Array.isArray(b.exclude) ? b.exclude.map(Number) : []);
       const playedOrder = Array.isArray(b.played) ? b.played.map(Number) : [];
@@ -319,9 +411,12 @@ var plugin = {
       if (pool.filter((t) => !recent.has(t.id)).length >= count * 2) {
         pool = pool.filter((t) => !recent.has(t.id));
       }
+      const g = ghost(c.id);
+      const ghostSay = ghostInfluence(g.votes);
+      const ghostScores = ghostSay > 0 && ctx.characteristics.enabled() ? ctx.characteristics.scoreAgainst(g.profile) : /* @__PURE__ */ new Map();
       const raw = pool.map((t) => {
         const gs = genresFor(t, genres);
-        const gw = gs.reduce((sum, g) => sum + (w.get(`genre|${g}`)?.w ?? 0), 0);
+        const gw = gs.reduce((sum, g2) => sum + (w.get(`genre|${g2}`)?.w ?? 0), 0);
         const fams = familiesOf(gs);
         let sw = 0;
         const counted = /* @__PURE__ */ new Set();
@@ -346,6 +441,7 @@ var plugin = {
           sw,
           ew,
           nw,
+          gh: ghostScores.get(t.id),
           aw: w.get(`artist|${t.norm_artist}`)?.w ?? 0,
           alw: w.get(`album|${t.norm_artist}|${t.norm_album}`)?.w ?? 0,
           tw: w.get(`track|${String(t.id)}`)?.w ?? 0,
@@ -370,9 +466,12 @@ var plugin = {
       const za = normaliser(vetoed.map((e) => e.aw));
       const zal = normaliser(vetoed.map((e) => e.alw));
       const zt = normaliser(vetoed.map((e) => e.tw));
+      const withGhost = vetoed.map((e) => e.gh).filter((x) => x !== void 0);
+      const zgh = normaliser(withGhost);
       const scored = vetoed.map((e) => ({
         t: e.t,
-        score: IMPORTANCE.genre * zg(e.gw) + IMPORTANCE.style * zs(e.sw) + IMPORTANCE.era * ze(e.ew) + IMPORTANCE.energy * zn(e.nw) + IMPORTANCE.artist * za(e.aw) + IMPORTANCE.album * zal(e.alw) + IMPORTANCE.track * zt(e.tw) - e.cool
+        score: IMPORTANCE.genre * zg(e.gw) + IMPORTANCE.style * zs(e.sw) + IMPORTANCE.era * ze(e.ew) + IMPORTANCE.energy * zn(e.nw) + IMPORTANCE.artist * za(e.aw) + IMPORTANCE.album * zal(e.alw) + IMPORTANCE.track * zt(e.tw) + // Scaled by evidence: nothing at zero votes, full say after about six.
+        IMPORTANCE.ghost * ghostSay * (e.gh === void 0 ? 0 : zgh(e.gh)) - e.cool
       }));
       const picked = [];
       const perArtist = /* @__PURE__ */ new Map();
@@ -457,6 +556,7 @@ var plugin = {
       if (era) addWeight(c.id, "era", era.key, era.label, d.era);
       const band = energyBandOf(t.energy);
       if (band) addWeight(c.id, "energy", band, `${band} energy`, d.energy);
+      const ghostMoved = ctx.characteristics.enabled() && moveGhost(c.id, t.id, direction);
       db.prepare(
         "INSERT INTO ishuffle_votes (user_id, track_id, norm_artist, direction, at) VALUES (?, ?, ?, ?, ?)"
       ).run(c.id, t.id, t.norm_artist, direction, now());
@@ -466,6 +566,7 @@ var plugin = {
       db.prepare("DELETE FROM ishuffle_votes WHERE at < ?").run(now() - ESCALATE_WINDOW_S);
       return {
         ok: true,
+        ghost: ghostMoved ? ghostSummary(c.id) : null,
         applied: {
           artist: t.artist_name,
           album: t.album_title,
@@ -481,7 +582,7 @@ var plugin = {
       const c = need(req, reply);
       if (!c) return;
       if (!c.id) return reply.code(400).send({ error: "a token caller has no library" });
-      return { mood: mood(c.id) };
+      return { mood: mood(c.id), ghost: ctx.characteristics.enabled() ? ghostSummary(c.id) : null };
     });
     app.post("/api/ishuffle/save-playlist", async (req, reply) => {
       const c = need(req, reply);
@@ -618,6 +719,8 @@ var plugin = {
       if (!c.id) return reply.code(400).send({ error: "a token caller has no library" });
       db.prepare("DELETE FROM ishuffle_weights WHERE user_id = ?").run(c.id);
       db.prepare("DELETE FROM ishuffle_votes WHERE user_id = ?").run(c.id);
+      db.prepare("DELETE FROM ishuffle_ghost WHERE user_id = ?").run(c.id);
+      db.prepare("DELETE FROM ishuffle_ghost_meta WHERE user_id = ?").run(c.id);
       return { ok: true };
     });
   }

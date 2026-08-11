@@ -47,6 +47,34 @@ export interface PluginContext {
   /** The session guard: has already replied 401 when it returns null. */
   need: (req: FastifyRequest, reply: FastifyReply) => PluginCaller | null;
   events: { on(event: string, fn: (event: string, e: { title: string; message: string }) => void): void };
+  /**
+   * Song characteristics, read-only, plus the distance maths over them (crate's
+   * lib/similarity.ts). A plugin gets the primitive rather than the tables: it may ask how close
+   * things are, and may not write scores.
+   *
+   * `enabled()` is the feature switch. False means no track has a profile worth asking about, and
+   * a caller should fall back to whatever it did before rather than treating an empty vector as
+   * a statement about the music.
+   */
+  characteristics: {
+    enabled(): boolean;
+    /** Active characteristic keys, so a caller can build a target profile in the right space. */
+    keys(): string[];
+    /** One track's merged AI+manual vector, or null when it has never been analysed. */
+    vectorOf(trackId: number): Map<string, number> | null;
+    /** How close every analysed track is to a target profile. Absent id = cannot say. */
+    scoreAgainst(profile: Record<string, number>): Map<number, number>;
+    compareToProfile(
+      trackId: number,
+      profile: Record<string, number>,
+    ): {
+      similarity: number | null;
+      overlap: number;
+      reason?: string;
+      closest: { characteristic: string; name: string; a: number; b: number; delta: number; weight: number }[];
+      differences: { characteristic: string; name: string; a: number; b: number; delta: number; weight: number }[];
+    };
+  };
   http: PluginHttp;
 }
 
