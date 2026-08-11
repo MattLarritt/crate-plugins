@@ -38,7 +38,6 @@ var vote = (trackId, direction) => post("/api/ishuffle/vote", { trackId, directi
 var moodNow = () => get("/api/ishuffle/mood");
 var resetMood = () => post("/api/ishuffle/reset", {});
 var saveMoodPlaylist = (name) => post("/api/ishuffle/save-playlist", { name });
-var sayToDj = (text) => post("/api/ishuffle/say", { text });
 
 // plugins/intelligent-shuffle/client/session.ts
 var active = false;
@@ -96,7 +95,6 @@ function IntelligentShufflePanel({ onClose, say }) {
   const [mood, setMood] = useState(null);
   const [ghost, setGhost] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [saying, setSaying] = useState("");
   const active2 = isActive();
   useEffect(() => {
     void moodNow().then((r) => {
@@ -263,37 +261,7 @@ function IntelligentShufflePanel({ onClose, say }) {
             }
           )
         ] })
-      ] }),
-      /* @__PURE__ */ jsxs(
-        "form",
-        {
-          className: "issay",
-          onSubmit: (e) => {
-            e.preventDefault();
-            const text = saying.trim();
-            if (!text || busy) return;
-            setBusy(true);
-            void sayToDj(text).then((r) => {
-              setMood(r.mood);
-              setSaying("");
-              say("good", r.summary);
-            }).catch((e2) => say("bad", e2.message)).finally(() => setBusy(false));
-          },
-          children: [
-            /* @__PURE__ */ jsx(
-              "input",
-              {
-                value: saying,
-                onChange: (e) => setSaying(e.target.value),
-                placeholder: "Tell the DJ: \u201C90s and heavier, no ballads\u201D",
-                maxLength: 300,
-                disabled: busy
-              }
-            ),
-            /* @__PURE__ */ jsx("button", { className: "btn sec sm", disabled: busy || !saying.trim(), children: "Say" })
-          ]
-        }
-      )
+      ] })
     ] })
   ] });
 }
@@ -307,6 +275,22 @@ function IntelligentShuffleService() {
   useEffect(() => {
     if (isActive() && currentId) notePlayed(currentId);
   }, [currentId]);
+  useEffect(() => {
+    const bar = document.querySelector(".playbar");
+    const root = document.documentElement;
+    if (!bar) {
+      root.style.removeProperty("--is-playbar-h");
+      return;
+    }
+    const ro = new ResizeObserver(() => {
+      root.style.setProperty("--is-playbar-h", `${Math.round(bar.offsetHeight)}px`);
+    });
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty("--is-playbar-h");
+    };
+  }, [!!p.current]);
   useEffect(() => {
     if (isActive() && p.source !== sessionSource()) stopSession();
   }, [p.source]);

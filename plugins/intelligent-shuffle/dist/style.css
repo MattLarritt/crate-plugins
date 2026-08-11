@@ -1,7 +1,19 @@
 /*
  * Intelligent Shuffle's window. Sized like a control surface, not a reading surface: unlike
- * the chords panel it does not need the whole screen — a centred column keeps the two big
- * buttons under the thumbs.
+ * the chords panel it does not need the whole screen — a narrow card keeps the two big buttons
+ * under the thumbs.
+ *
+ * WHY THE BOTTOM RIGHT. It used to sit centred under the header, where a control surface
+ * behaves like a modal: it covers the library you are steering and reads as something to
+ * dismiss before you can carry on. Docked into the corner above the play bar it is a panel
+ * next to the transport it belongs to — the page stays visible and usable behind it, and the
+ * two big buttons land near the thumb that just pressed the DJ icon in the play bar.
+ *
+ * `--is-playbar-h` is the play bar's measured height, published by IntelligentShuffleService
+ * through a ResizeObserver. It is measured rather than assumed because the bar reflows from
+ * ~120px to over 200px as the window narrows, and a hardcoded offset that looked right on a
+ * desktop sat 80px inside the bar in a 732px window. The 120px fallback covers the frame before
+ * the first observation lands.
  */
 .ispanel {
   position: fixed;
@@ -13,25 +25,40 @@
   border: 1px solid var(--bd);
   border-radius: 16px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
-  top: 72px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(560px, calc(100vw - 32px));
-  max-height: calc(100vh - 200px);
-  bottom: auto;
+  right: 16px;
+  bottom: calc(var(--is-playbar-h, 120px) + 12px + env(safe-area-inset-bottom, 0px));
+  top: auto;
+  left: auto;
+  transform: none;
+  width: min(400px, calc(100vw - 32px));
+  /* Never under the header, however tall the content gets: 88px is the header, the rest is
+     whatever the play bar is currently taking. */
+  max-height: calc(100vh - 88px - var(--is-playbar-h, 120px) - 12px);
   overflow-y: auto;
 }
-@media (max-width: 820px) {
+/*
+ * Only genuinely narrow screens get the full-bleed sheet. A corner card needs room either
+ * side of it to read as a corner card; below this it just looks like a cramped modal, so a
+ * phone keeps the sheet it always had.
+ */
+@media (max-width: 560px) {
   .ispanel {
     top: 0;
     left: 0;
+    right: 0;
     transform: none;
     width: auto;
-    right: 0;
     border-radius: 0;
     border: none;
     max-height: none;
-    bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+    /*
+     * The measured height here too. This used to be a flat 88px, which is what the play bar is
+     * on a wide screen — but the sheet only ever shows on a NARROW one, where the bar reflows to
+     * over 200px, so the sheet ran 125px down behind the transport it was sitting on. Flush to
+     * the bar rather than the 12px gap the corner card uses: a sheet meets the bar, it does not
+     * float above it.
+     */
+    bottom: calc(var(--is-playbar-h, 88px) + env(safe-area-inset-bottom, 0px));
   }
 }
 

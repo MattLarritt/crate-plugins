@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { usePlayer } from 'crate/player';
 import type { PanelProps } from '../../../types/contract';
-import { moodNow, plan, resetMood, saveMoodPlaylist, sayToDj, vote, type Ghost, type Mood } from './api';
+import { moodNow, plan, resetMood, saveMoodPlaylist, vote, type Ghost, type Mood } from './api';
 import { getVersion, isActive, playedIds, startSession, stopSession, subscribe } from './session';
 
 /**
@@ -29,7 +29,6 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
   const [mood, setMood] = useState<Mood | null>(null);
   const [ghost, setGhost] = useState<Ghost | null>(null);
   const [busy, setBusy] = useState(false);
-  const [saying, setSaying] = useState('');
   const active = isActive();
 
   useEffect(() => {
@@ -264,36 +263,23 @@ export function IntelligentShufflePanel({ onClose, say }: PanelProps) {
             </div>
           )}
 
-          {/* Talk to the DJ: the megaphone next to the steering wheel. Words become the
-              same weights a vote writes, so the two never disagree. */}
-          <form
-            className="issay"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const text = saying.trim();
-              if (!text || busy) return;
-              setBusy(true);
-              void sayToDj(text)
-                .then((r) => {
-                  setMood(r.mood);
-                  setSaying('');
-                  say('good', r.summary);
-                })
-                .catch((e2: Error) => say('bad', e2.message))
-                .finally(() => setBusy(false));
-            }}
-          >
-            <input
-              value={saying}
-              onChange={(e) => setSaying(e.target.value)}
-              placeholder="Tell the DJ: “90s and heavier, no ballads”"
-              maxLength={300}
-              disabled={busy}
-            />
-            <button className="btn sec sm" disabled={busy || !saying.trim()}>
-              Say
-            </button>
-          </form>
+          {/*
+            * TALK TO THE DJ IS HIDDEN, NOT REMOVED.
+            *
+            * POST /api/ishuffle/say works — it translates a sentence into weight deltas in the
+            * same vocabulary votes use, and returns a summary. It just does not FEEL like it
+            * works, for two reasons worth fixing before it comes back:
+            *
+            *   1. It never re-deals. A NO vote replaces the unplayed tail while you watch; a
+            *      sentence only updated the chips, so the next five songs were whatever they
+            *      already were. You said something and nothing you could hear changed.
+            *   2. One sentence is quiet against a session's accumulated weights. Deltas cap at
+            *      ±3 where a worked-in mood is already sitting past 7, so "90s and heavier"
+            *      moved the queue less than the chips implied it had.
+            *
+            * The server route and sayToDj() stay in place, so restoring this is putting the
+            * form back plus a redeal() in the success path.
+            */}
         </div>
       )}
     </div>

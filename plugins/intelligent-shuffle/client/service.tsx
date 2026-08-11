@@ -23,6 +23,38 @@ export function IntelligentShuffleService() {
   }, [currentId]);
 
   /*
+   * Publish the play bar's real height so the panel can dock above it.
+   *
+   * The panel is docked bottom-right and has to clear the play bar, but the bar's height is not
+   * a constant to hardcode: it reflows at narrow widths (transport wrapping, the touch button
+   * row appearing) and swings from about 120px to over 200px. A fixed offset that looked right
+   * on a desktop overlapped the bar by 80px in a 732px-wide window. So measure it.
+   *
+   * A ResizeObserver rather than a resize listener, because the bar also changes height without
+   * the window changing size. Written to the root element as a CSS variable so the positioning
+   * stays in the stylesheet where the rest of the layout lives; the CSS keeps a 120px fallback
+   * for the moment before the first observation lands.
+   */
+  useEffect(() => {
+    const bar = document.querySelector('.playbar');
+    const root = document.documentElement;
+    if (!bar) {
+      root.style.removeProperty('--is-playbar-h');
+      return;
+    }
+    // The BORDER box, not contentRect: the bar carries 10px of vertical padding and a 1px top
+    // border, and clearing only its content box would leave the panel 21px into it.
+    const ro = new ResizeObserver(() => {
+      root.style.setProperty('--is-playbar-h', `${Math.round((bar as HTMLElement).offsetHeight)}px`);
+    });
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty('--is-playbar-h');
+    };
+  }, [!!p.current]);
+
+  /*
    * The user outranks the DJ, silently. play() always stamps a new source label, so a label
    * that no longer matches the session's means somebody started an album, a playlist, a
    * search result — a choice. The session ends itself rather than fighting the queue back.
