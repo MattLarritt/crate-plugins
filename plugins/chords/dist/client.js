@@ -811,7 +811,7 @@ function ChordPanel({
   ] }) : null;
   return /* @__PURE__ */ jsxs("div", { className: "chordpanel", children: [
     /* @__PURE__ */ jsxs("div", { className: "chordhead", children: [
-      /* @__PURE__ */ jsx("svg", { className: "chordlogo", viewBox: `0 0 ${WORDMARK.w} ${WORDMARK.h}`, role: "img", "aria-label": "Crate", children: /* @__PURE__ */ jsx("path", { fill: "currentColor", fillRule: "evenodd", d: WORDMARK.d }) }),
+      /* @__PURE__ */ jsx("button", { type: "button", className: "chordlogo", onClick: onClose, title: "Back to crate", "aria-label": "Close chords", children: /* @__PURE__ */ jsx("svg", { viewBox: `0 0 ${WORDMARK.w} ${WORDMARK.h}`, role: "img", "aria-label": "Crate", children: /* @__PURE__ */ jsx("path", { fill: "currentColor", fillRule: "evenodd", d: WORDMARK.d }) }) }),
       /* @__PURE__ */ jsxs("div", { className: "words", children: [
         /* @__PURE__ */ jsx("div", { className: "t", children: title }),
         /* @__PURE__ */ jsxs("div", { className: "s muted", children: [

@@ -872,11 +872,17 @@ export function ChordPanel({
   return (
     <div className="chordpanel">
       <div className="chordhead">
-        {/* This panel covers the app's own header, so the wordmark is the only thing left
-            saying which application you are looking at. */}
-        <svg className="chordlogo" viewBox={`0 0 ${WORDMARK.w} ${WORDMARK.h}`} role="img" aria-label="Crate">
-          <path fill="currentColor" fillRule="evenodd" d={WORDMARK.d} />
-        </svg>
+        {/*
+          * This panel covers the app's own header, so the wordmark is the only thing left saying
+          * which application you are looking at — which is also why it is the obvious thing to
+          * press to get back to it. A logo in the top-left corner of a full-screen view reads as
+          * "home" to everybody, so it now behaves that way instead of ignoring the click.
+          */}
+        <button type="button" className="chordlogo" onClick={onClose} title="Back to crate" aria-label="Close chords">
+          <svg viewBox={`0 0 ${WORDMARK.w} ${WORDMARK.h}`} role="img" aria-label="Crate">
+            <path fill="currentColor" fillRule="evenodd" d={WORDMARK.d} />
+          </svg>
+        </button>
         <div className="words">
           <div className="t">{title}</div>
           <div className="s muted">

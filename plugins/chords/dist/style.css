@@ -43,7 +43,20 @@
   flex: none;
 }
 /* Sized in height only; the viewBox carries the aspect. */
-.chordlogo { height: 17px; width: auto; flex: none; opacity: 0.85; }
+/* A button, because it closes the panel — but styled as the mark it is, not as a control. */
+.chordlogo {
+  flex: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.85;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.chordlogo svg { height: 17px; width: auto; display: block; }
+.chordlogo:hover { opacity: 1; color: var(--acc); }
 @media (max-width: 620px) { .chordlogo { display: none; } }
 .chordhead .words { min-width: 0; flex: 1; }
 .chordhead .t { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
