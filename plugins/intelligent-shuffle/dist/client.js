@@ -331,6 +331,8 @@ var { Svg } = window.crateHost.icons;
 
 // plugins/intelligent-shuffle/client/icon.tsx
 function IconIntelligentShuffle(p) {
+  const live = useSyncExternalStore(subscribe, () => isActive(), () => false);
+  void useSyncExternalStore(subscribe, getVersion, () => 0);
   return /* @__PURE__ */ jsxs(Svg, { ...p, stroke: true, children: [
     /* @__PURE__ */ jsx("path", { d: "M16.5 4.5 20 7l-3.5 2.5" }),
     /* @__PURE__ */ jsx("path", { d: "M20 7h-2.6a4.2 4.2 0 0 0-3.45 1.82l-.8 1.18" }),
@@ -345,7 +347,8 @@ function IconIntelligentShuffle(p) {
         fill: "currentColor",
         stroke: "none"
       }
-    )
+    ),
+    live && /* @__PURE__ */ jsx("circle", { cx: "19.5", cy: "12", r: "2.4", fill: "currentColor", stroke: "none" })
   ] });
 }
 

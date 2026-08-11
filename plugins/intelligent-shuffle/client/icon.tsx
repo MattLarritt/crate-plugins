@@ -1,4 +1,6 @@
+import { useSyncExternalStore } from 'react';
 import { Svg, type IconProps } from 'crate/icons';
+import { getVersion, isActive, subscribe } from './session';
 
 /**
  * Intelligent Shuffle: the shuffle arrows with a spark where they cross.
@@ -6,8 +8,16 @@ import { Svg, type IconProps } from 'crate/icons';
  * Deliberately reads as "shuffle, plus" — same crossing-paths idea as the transport's shuffle
  * so the kinship is visible at 18px, with the four-point spark saying something is thinking.
  * Line style, matching the other panel toggles.
+ *
+ * THE SPARK LIGHTS WHEN A SESSION IS LIVE. Until now the only place a running session was
+ * visible was inside the panel, so "is the DJ actually on?" was unanswerable without opening it —
+ * and the session stops ITSELF whenever somebody plays an album or a search result, by design and
+ * silently. A queue that had quietly reverted to playing an album in order was indistinguishable
+ * from a DJ making bad choices. The icon is the honest place to say which.
  */
 export function IconIntelligentShuffle(p: IconProps) {
+  const live = useSyncExternalStore(subscribe, () => isActive(), () => false);
+  void useSyncExternalStore(subscribe, getVersion, () => 0);
   return (
     <Svg {...p} stroke>
       <path d="M16.5 4.5 20 7l-3.5 2.5" />
@@ -22,6 +32,8 @@ export function IconIntelligentShuffle(p: IconProps) {
         fill="currentColor"
         stroke="none"
       />
+      {/* Live: a dot in the corner, the same language a recording light uses. */}
+      {live && <circle cx="19.5" cy="12" r="2.4" fill="currentColor" stroke="none" />}
     </Svg>
   );
 }
