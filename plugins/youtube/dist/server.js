@@ -331,7 +331,8 @@ function source(ctx, yt) {
     id: "youtube",
     label: "YouTube",
     async search(q, limit) {
-      const out = await yt.run(["--flat-playlist", "-J", `ytsearch${Math.max(limit * 2, 8)}:${q}`], {
+      const want = Math.max(limit, num("maxResults", limit));
+      const out = await yt.run(["--flat-playlist", "-J", `ytsearch${Math.max(want * 2, 8)}:${q}`], {
         timeoutMs: 2e4
       });
       const parsed = JSON.parse(out);
@@ -340,7 +341,7 @@ function source(ctx, yt) {
         return { ...e, ...thumb ? { thumbnail: thumb } : {} };
       });
       return rank(entries, q, {
-        limit: num("maxResults", limit),
+        limit: want,
         minDurationS: num("minDurationS", 60),
         maxDurationS: num("maxDurationS", 900)
       });
@@ -404,7 +405,7 @@ var shared = null;
 var plugin = {
   id: "youtube",
   settings: [
-    { key: "maxResults", label: "Results per search", type: "number", default: 5, hint: "How many YouTube songs to offer when the library has none." },
+    { key: "maxResults", label: "Results per search", type: "number", default: 5, hint: "At least this many YouTube songs per search \u2014 what a Subsonic app gets when the library has none. The web page asks for more when you press See more." },
     { key: "minDurationS", label: "Shortest song (seconds)", type: "number", default: 60, hint: "Drops previews, intros and shorts." },
     { key: "maxDurationS", label: "Longest song (seconds)", type: "number", default: 900, hint: "Drops full albums, mixes and hour-long loops." }
   ],

@@ -91,7 +91,10 @@ function source(ctx: PluginContext, yt: Ytdlp): ExternalSource {
     async search(q, limit) {
       // Asked for more than will be kept: the ranking drops live sets, loops and karaoke, and
       // needs something left over to choose from.
-      const out = await yt.run(['--flat-playlist', '-J', `ytsearch${Math.max(limit * 2, 8)}:${q}`], {
+      // The caller's limit, or the admin's "Results per search" when that is higher — so the
+      // setting raises the OpenSubsonic fallback, and a page's See more can still ask for more.
+      const want = Math.max(limit, num('maxResults', limit));
+      const out = await yt.run(['--flat-playlist', '-J', `ytsearch${Math.max(want * 2, 8)}:${q}`], {
         timeoutMs: 20_000,
       });
       const parsed = JSON.parse(out) as {
@@ -102,7 +105,7 @@ function source(ctx: PluginContext, yt: Ytdlp): ExternalSource {
         return { ...e, ...(thumb ? { thumbnail: thumb } : {}) };
       });
       return rank(entries, q, {
-        limit: num('maxResults', limit),
+        limit: want,
         minDurationS: num('minDurationS', 60),
         maxDurationS: num('maxDurationS', 900),
       });
@@ -175,7 +178,7 @@ const plugin: CratePlugin = {
   id: 'youtube',
 
   settings: [
-    { key: 'maxResults', label: 'Results per search', type: 'number', default: 5, hint: 'How many YouTube songs to offer when the library has none.' },
+    { key: 'maxResults', label: 'Results per search', type: 'number', default: 5, hint: 'At least this many YouTube songs per search — what a Subsonic app gets when the library has none. The web page asks for more when you press See more.' },
     { key: 'minDurationS', label: 'Shortest song (seconds)', type: 'number', default: 60, hint: 'Drops previews, intros and shorts.' },
     { key: 'maxDurationS', label: 'Longest song (seconds)', type: 'number', default: 900, hint: 'Drops full albums, mixes and hour-long loops.' },
   ],
