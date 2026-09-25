@@ -22,6 +22,8 @@ declare module 'crate/player' {
     artistName: string;
     albumTitle: string;
     durationS: number | null;
+    /** A song from an external source, played by its x- id; trackId is 0. crate >= external-sources. */
+    external?: { id: string };
   }
   export interface PlayerApi {
     queue: PlayableTrack[];

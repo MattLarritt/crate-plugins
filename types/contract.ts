@@ -27,7 +27,11 @@ export interface PluginCaller {
 export interface PluginHttp {
   getText(url: string, opts?: { timeoutMs?: number; headers?: Record<string, string> }): Promise<string>;
   getJson<T>(url: string, opts?: { timeoutMs?: number; headers?: Record<string, string> }): Promise<T | null>;
-  getBytes(url: string, opts?: { timeoutMs?: number; headers?: Record<string, string> }): Promise<Buffer | null>;
+  /** Resolves null on a non-2xx, and carries the content type — crate's real shape. */
+  getBytes(
+    url: string,
+    opts?: { timeoutMs?: number; headers?: Record<string, string> },
+  ): Promise<{ body: Buffer; contentType: string } | null>;
 }
 
 export interface PluginContext {
@@ -76,6 +80,72 @@ export interface PluginContext {
     };
   };
   http: PluginHttp;
+  /**
+   * Put a file into the library for someone — crate's dedupe, move, index, override, own
+   * sequence (its lib/ingest.ts). The file is MOVED. Requires crate >= external-sources.
+   */
+  library: {
+    ingest(
+      input: { file: string; artist: string; title: string; album?: string; trackNo?: number },
+      userId: number,
+    ): Promise<{ trackId: number; adopted: boolean; artist: string; title: string; album: string }>;
+  };
+  /** A writable directory that belongs to this plugin alone, under /data. */
+  dataDir: string;
+  /** This plugin's own settings, as declared in CratePlugin.settings. Read-only. */
+  settings: { get(key: string): string | number | boolean | undefined };
+}
+
+/** One song an external source can offer. `key` is the source's own id for it. */
+export interface ExternalHit {
+  key: string;
+  title: string;
+  artist: string;
+  album?: string;
+  durationS?: number;
+  coverUrl?: string;
+  score?: number;
+}
+
+/** Where a song's audio is right now. crate proxies it; the plugin never touches HTTP. */
+export interface ExternalStream {
+  url: string;
+  mime: string;
+  headers?: Record<string, string>;
+  sizeBytes?: number;
+  /** Epoch seconds after which the URL stops working. */
+  expiresAt?: number;
+}
+
+export interface ExternalAcquired {
+  file: string;
+  artist: string;
+  title: string;
+  album?: string;
+  trackNo?: number;
+}
+
+/**
+ * Songs from outside the library. The plugin answers four questions; crate does everything a
+ * person or client can see — ids (x-<id>-<key>), auth, Range, transcoding, when to fall back,
+ * when a listen counts, the import, the caps. Mirrors crate's src/lib/plugin.ts.
+ */
+export interface ExternalSource {
+  /** [a-z0-9]+ — the <source> in x-<source>-<key>. Changing it orphans every id. */
+  id: string;
+  label: string;
+  search(q: string, limit: number): Promise<ExternalHit[]>;
+  describe(key: string): Promise<ExternalHit | null>;
+  resolveStream(key: string): Promise<ExternalStream>;
+  acquire(key: string, hit: ExternalHit): Promise<ExternalAcquired>;
+}
+
+export interface PluginSettingDef {
+  key: string;
+  label: string;
+  type: 'boolean' | 'string' | 'number' | 'secret';
+  default?: string | number | boolean;
+  hint?: string;
 }
 
 /** What a plugin's server/index.ts default-exports. */
@@ -83,6 +153,10 @@ export interface CratePlugin {
   id: string;
   migrate?(db: Database.Database): void;
   routes?(app: FastifyInstance, ctx: PluginContext): void;
+  /** Offer songs from outside the library. Requires crate >= external-sources. */
+  source?(ctx: PluginContext): ExternalSource;
+  /** Settings the admin can change on this plugin's page. */
+  settings?: PluginSettingDef[];
 }
 
 // ---- client half ----------------------------------------------------------

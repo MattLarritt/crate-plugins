@@ -6,6 +6,13 @@
       "version": "1.4.0",
       "description": "Chord sheets and tabs for your songs, imported from Ultimate Guitar. Guitar or ukulele diagrams, and a transpose control for singing it in your own key.",
       "dir": "plugins/chords/dist"
+    },
+    {
+      "id": "youtube",
+      "name": "YouTube",
+      "version": "0.1.0",
+      "description": "When a song is not in your library, find it on YouTube and play it straight away. Listen for thirty seconds and it is downloaded into your library. Works through OpenSubsonic too, so a phone client or a voice request just plays it.",
+      "dir": "plugins/youtube/dist"
     }
   ]
 }
