@@ -22,6 +22,8 @@
 export interface SearchEntry {
   id: string;
   title: string;
+  /** "Youtube" for a video; "YoutubeTab" for the channels and playlists search also returns. */
+  ie_key?: string;
   channel?: string;
   uploader?: string;
   duration?: number | null;
@@ -36,6 +38,9 @@ export interface RankedHit {
   coverUrl?: string;
   score: number;
 }
+
+/** Eleven characters of YouTube's id alphabet: a video, never a channel or a playlist. */
+const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
 /** Words that mean "not the recording", each with how hard it is penalised. */
 const UNWANTED: [RegExp, string, number][] = [
@@ -99,6 +104,9 @@ export function rank(
   const scored: RankedHit[] = [];
   entries.forEach((e, i) => {
     if (!e.id || !e.title) return;
+    // Only videos. Search mixes in channels (a 24-character "UC…" id) and playlists, and
+    // one of those offered as a song fails the moment it is played.
+    if (!VIDEO_ID.test(e.id) || (e.ie_key && e.ie_key !== 'Youtube')) return;
     const d = e.duration ?? null;
     if (d !== null && (d < opts.minDurationS || d > opts.maxDurationS)) return;
 

@@ -218,6 +218,7 @@ async function download(url, to) {
 }
 
 // plugins/youtube/server/rank.ts
+var VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 var UNWANTED = [
   [/\bkaraoke\b/i, "karaoke", 30],
   [/\breaction\b|\breacts?\b/i, "reaction", 30],
@@ -250,6 +251,7 @@ function rank(entries, q, opts) {
   const scored = [];
   entries.forEach((e, i) => {
     if (!e.id || !e.title) return;
+    if (!VIDEO_ID.test(e.id) || e.ie_key && e.ie_key !== "Youtube") return;
     const d = e.duration ?? null;
     if (d !== null && (d < opts.minDurationS || d > opts.maxDurationS)) return;
     const channel = e.channel ?? e.uploader ?? "";

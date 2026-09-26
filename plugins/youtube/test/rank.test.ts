@@ -74,6 +74,20 @@ describe('rank', () => {
     assert.deepEqual(hits.map((h) => h.key), ['88888888888']);
   });
 
+  test('channels and playlists are not songs', () => {
+    const hits = rank(
+      [
+        { id: 'UCRmhB4aHx1A4XqEl0GFOHVw', title: 'Blur', channel: 'Blur', ie_key: 'YoutubeTab' },
+        { id: 'PLabcdefghijklmnopqrstuv', title: 'Blur — best of', channel: 'x', ie_key: 'YoutubeTab' },
+        { id: 'abcdefghijk', title: 'Blur (channel page)', channel: 'x', ie_key: 'YoutubeTab' },
+        e('88888888888', 'Blur - Song 2', 'Blur - Topic'),
+      ],
+      'blur',
+      opts,
+    );
+    assert.deepEqual(hits.map((h) => h.key), ['88888888888']);
+  });
+
   test('an unknown duration is kept rather than guessed at', () => {
     assert.equal(rank([{ id: '99999999999', title: 'Blur - Song 2', channel: 'x', duration: null }], 'song 2', opts).length, 1);
   });
