@@ -12,9 +12,9 @@ import type { FastifyBaseLogger } from 'fastify';
  *
  * YouTube changes something every few weeks and yt-dlp ships a fix within days; a copy that
  * is not kept current stops working quietly, and "search finds nothing" is indistinguishable
- * from "there was nothing to find". crate's image is built locally and deliberately skipped by
- * the weekly container updater, so this plugin cannot rely on the image to carry a current
- * copy — it manages its own, in its data directory:
+ * from "there was nothing to find". crate's image does not carry yt-dlp at all, and an image is
+ * rebuilt far less often than yt-dlp needs updating, so this plugin cannot rely on the image to
+ * carry a current copy — it manages its own, in its data directory:
  *
  *   - installed on first use from yt-dlp's official GitHub release, the musl build (crate's
  *     image is Alpine), and CHECKED against the SHA2-256SUMS published with that release
@@ -229,7 +229,7 @@ export function exec(bin: string, args: string[], timeoutMs: number): Promise<st
   });
 }
 
-/** GET over IPv4 following redirects — the estate has no IPv6 egress. */
+/** GET over IPv4 following redirects — for networks where IPv6 resolves but goes nowhere. */
 function get(url: string, hops = 5): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const req = httpsRequest(url, { family: 4, headers: { 'User-Agent': 'crate-youtube-plugin' } }, (res) => {

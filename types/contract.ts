@@ -23,7 +23,7 @@ export interface PluginCaller {
   viaToken: boolean;
 }
 
-/** IPv4-pinned HTTP helpers from crate's lib/http — the estate has no IPv6 egress. */
+/** IPv4-pinned HTTP helpers from crate's lib/http — for networks where IPv6 resolves but goes nowhere. */
 export interface PluginHttp {
   getText(url: string, opts?: { timeoutMs?: number; headers?: Record<string, string> }): Promise<string>;
   getJson<T>(url: string, opts?: { timeoutMs?: number; headers?: Record<string, string> }): Promise<T | null>;
