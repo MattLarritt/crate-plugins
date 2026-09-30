@@ -85,7 +85,8 @@ What the server half is handed, as `ctx`:
 | `characteristics` | Read-only song characteristics and the similarity maths over them. |
 | `events` | crate's notification events — `request.created`, `request.fulfilled`, `library.scanned`, `library.external` and more. |
 | `http` | IPv4-pinned `getText` / `getJson` / `getBytes`. Use these rather than `fetch`: a host that publishes an IPv6 address the network can't route stalls a plain fetch. |
-| `library.ingest` | Put a file into the library for someone — crate's dedupe, move, index and ownership. |
+| `library.ingest` | Put a file into the library for someone — crate's dedupe, move, index and ownership. `retag: true` writes the identity into the file's tags first. |
+| `ai` | Specific AI tasks on crate's own OpenAI key, with crate's prompts and checks — currently `identifySong(evidence)`. Never a free-form call. Check `ctx.ai?.available()`: absent on older crates, false with no key. |
 | `dataDir` | A writable directory of your own, under `/data/plugin-data/<id>/`. |
 | `settings.get(key)` | Your declared settings' current values. |
 | `log` | crate's logger. |

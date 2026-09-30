@@ -310,6 +310,37 @@ function identify(info) {
     ...info.thumbnail ? { coverUrl: info.thumbnail } : {}
   };
 }
+var EMPTY_GENRES = /* @__PURE__ */ new Set(["music", "entertainment", "people & blogs", "film & animation"]);
+async function nameIt(ctx, meta, who) {
+  const genre = meta?.genre && !EMPTY_GENRES.has(meta.genre.toLowerCase()) ? meta.genre : void 0;
+  let named = {
+    artist: who.artist,
+    title: who.title,
+    ...who.album ? { album: who.album } : {},
+    ...meta?.album_artist && meta.album_artist !== who.artist ? { albumArtist: meta.album_artist } : {},
+    ...meta?.track_number ? { trackNo: meta.track_number } : {},
+    ...meta?.release_year ? { year: meta.release_year } : {},
+    ...genre ? { genre } : {}
+  };
+  if (!meta || ctx.settings.get("aiCleanup") !== true || !ctx.ai?.available()) return named;
+  const channel = meta.channel ?? meta.uploader;
+  const ai = await ctx.ai.identifySong({
+    videoTitle: meta.title,
+    ...channel ? { channel } : {},
+    ...meta.description ? { description: meta.description } : {},
+    ...meta.track ? { track: meta.track } : {},
+    ...meta.artists?.[0] ?? meta.artist ? { artist: meta.artists?.[0] ?? meta.artist } : {},
+    ...meta.album ? { album: meta.album } : {},
+    ...meta.release_year ? { releaseYear: meta.release_year } : {},
+    ...meta.duration ? { durationS: Math.round(meta.duration) } : {},
+    guess: { artist: who.artist, title: who.title, ...who.album ? { album: who.album } : {} }
+  }).catch(() => null);
+  if (ai) {
+    named = { ...named, ...ai };
+    ctx.log.info({ key: meta.id, artist: ai.artist, title: ai.title, album: ai.album }, "youtube: named by AI");
+  }
+  return named;
+}
 function source(ctx, yt) {
   const dl = join2(ctx.dataDir, "dl");
   const num = (k, d) => {
@@ -372,6 +403,7 @@ function source(ctx, yt) {
       void sweep().catch(() => void 0);
       const meta = await info(key).catch(() => null);
       const who = meta ? identify(meta) : hit;
+      const named = await nameIt(ctx, meta, who);
       const out = await yt.run(
         [
           "--no-playlist",
@@ -394,12 +426,7 @@ function source(ctx, yt) {
       const file = out.trim().split("\n").filter(Boolean).pop();
       if (!file) throw new Error("yt-dlp finished without saying where the file is");
       await stat2(file);
-      return {
-        file,
-        artist: who.artist,
-        title: who.title,
-        ...who.album ? { album: who.album } : {}
-      };
+      return { file, ...named, retag: true };
     }
   };
 }
@@ -409,7 +436,14 @@ var plugin = {
   settings: [
     { key: "maxResults", label: "Results per search", type: "number", default: 5, hint: "At least this many YouTube songs per search \u2014 what a Subsonic app gets when the library has none. The web page asks for more when you press See more." },
     { key: "minDurationS", label: "Shortest song (seconds)", type: "number", default: 60, hint: "Drops previews, intros and shorts." },
-    { key: "maxDurationS", label: "Longest song (seconds)", type: "number", default: 900, hint: "Drops full albums, mixes and hour-long loops." }
+    { key: "maxDurationS", label: "Longest song (seconds)", type: "number", default: 900, hint: "Drops full albums, mixes and hour-long loops." },
+    {
+      key: "aiCleanup",
+      label: "Allow AI to cleanup and retag tracks downloaded from YouTube",
+      type: "boolean",
+      default: false,
+      hint: "Uses crate's OpenAI key (Admin \u2192 Integrations) to name each kept song from its video \u2014 artist, title, album, year, genre \u2014 before it is tagged and filed. Off, the plugin tidies the video title itself. Either way the file is retagged."
+    }
   ],
   source(ctx) {
     shared ??= new Ytdlp(ctx.dataDir, ctx.log);
@@ -438,5 +472,6 @@ var plugin = {
 var index_default = plugin;
 export {
   index_default as default,
-  identify
+  identify,
+  nameIt
 };

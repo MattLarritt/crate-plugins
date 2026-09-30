@@ -69,6 +69,12 @@ source(ctx) {
 `ExternalHit` fields: `key` (your own id for the song), `title`, `artist`, and optionally
 `album`, `durationS`, `coverUrl` (proxied by crate) and `score`.
 
+`acquire` may also return `albumArtist`, `trackNo`, `year` and `genre`, and `retag: true` to have
+crate write the final identity into the file's own tags before filing it — which a source should
+almost always ask for, since a downloaded file carries the source's tags, not the song's. To name
+a song better than your own parsing can, `ctx.ai?.identifySong(...)` asks crate's AI with the
+evidence you have; it returns null when it isn't sure.
+
 ## What crate does with it
 
 **Ids.** A song is `x-<source>-<key>` everywhere — the web app, OpenSubsonic, playlists. Once a

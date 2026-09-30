@@ -86,9 +86,30 @@ export interface PluginContext {
    */
   library: {
     ingest(
-      input: { file: string; artist: string; title: string; album?: string; trackNo?: number },
+      input: {
+        file: string;
+        artist: string;
+        title: string;
+        album?: string;
+        trackNo?: number;
+        albumArtist?: string;
+        year?: number;
+        genre?: string;
+        /** Write the identity into the file's own tags first. Requires crate >= retag. */
+        retag?: boolean;
+      },
       userId: number,
     ): Promise<{ trackId: number; adopted: boolean; artist: string; title: string; album: string }>;
+  };
+  /**
+   * AI, narrowly: named things crate lets a plugin ask for, on crate's own OpenAI key with
+   * crate's prompts and checks — never a free-form call. Absent on a crate older than this
+   * (so always check `ctx.ai?.available()`); `available()` is false with no key configured.
+   */
+  ai?: {
+    available(): boolean;
+    /** Name a downloaded song from its video's metadata. Null when unsure — keep your own guess. */
+    identifySong(evidence: SongEvidence): Promise<SongIdentity | null>;
   };
   /** A writable directory that belongs to this plugin alone, under /data. */
   dataDir: string;
@@ -123,6 +144,35 @@ export interface ExternalAcquired {
   title: string;
   album?: string;
   trackNo?: number;
+  albumArtist?: string;
+  year?: number;
+  genre?: string;
+  /** Write this identity into the file's own tags before it is filed. Requires crate >= retag. */
+  retag?: boolean;
+}
+
+/** What a downloaded video says about itself, for ctx.ai.identifySong. */
+export interface SongEvidence {
+  videoTitle: string;
+  channel?: string;
+  description?: string;
+  track?: string;
+  artist?: string;
+  album?: string;
+  releaseYear?: number;
+  durationS?: number;
+  guess?: { artist: string; title: string; album?: string };
+}
+
+/** A song's identity, as tags. Everything but artist and title may be unknown. */
+export interface SongIdentity {
+  artist: string;
+  title: string;
+  album?: string;
+  albumArtist?: string;
+  trackNo?: number;
+  year?: number;
+  genre?: string;
 }
 
 /**

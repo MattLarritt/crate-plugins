@@ -35,6 +35,25 @@ reused, not duplicated) and filed as `Artist/Album/Title.m4a` — album `Singles
 doesn't name one. Keeps count against crate's daily download cap. From then on it is a library
 track, and any client that cached its YouTube id gets the library file.
 
+## Naming and tags
+
+A video is titled for viewers — "Blur - Song 2 (Official Music Video) [HD]" on a channel called
+"Blur - Topic" — and that is what yt-dlp writes into the file. So before a kept song is filed,
+crate **writes the song's real identity into the file's own tags**: artist, title, album, album
+artist, track number, year and genre. Every other player that reads the file then sees the
+song, not the video.
+
+Where that identity comes from, best first:
+
+1. **AcoustID**, if crate has a key: a confident audio fingerprint names the recording outright.
+2. **AI**, if **Allow AI to cleanup and retag tracks downloaded from YouTube** is on and crate has
+   an OpenAI key (Admin → Integrations). The model names the song from the video's title,
+   channel and description, and crate checks the answer against them — a name that appears
+   nowhere in the video's own details is refused, and anything the model isn't sure of stays
+   empty rather than guessed.
+3. **The plugin's own reading**: YouTube Music's track fields when the video has them, otherwise
+   the title with the video noise removed, plus the release year and track number YouTube states.
+
 ## Settings
 
 On the plugin's row in **Admin → Plugins**:
@@ -44,6 +63,7 @@ On the plugin's row in **Admin → Plugins**:
 | Results per search | 5 | At least this many songs per search — what a Subsonic app gets when the library has none. The web page asks for more on See more. |
 | Shortest song (seconds) | 60 | Drops previews, intros and shorts. |
 | Longest song (seconds) | 900 | Drops full albums, mixes and hour-long loops. |
+| Allow AI to cleanup and retag tracks downloaded from YouTube | off | Names each kept song with AI before it is tagged and filed. Uses crate's OpenAI key. Off, the plugin tidies the title itself; either way the file is retagged. |
 
 ## Which result plays
 
@@ -82,7 +102,9 @@ and check for an update now with `POST /api/youtube/update`.
 
 ## Needs
 
-- crate with external sources (in crate since the external-sources release).
+- crate with external sources (in crate since the external-sources release). Writing tags and the
+  AI naming need a crate new enough to offer them; on an older one, songs are kept with
+  YouTube's tags, as before.
 - Outbound HTTPS to `github.com` (install and updates) and to YouTube.
 
 ## Please note

@@ -1,6 +1,6 @@
 import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { CratePlugin, ExternalHit, ExternalSource, PluginContext } from '../../../types/contract.js';
+import type { CratePlugin, ExternalAcquired, ExternalHit, ExternalSource, PluginContext } from '../../../types/contract.js';
 import { Ytdlp } from './ytdlp.js';
 import { bestThumbnail, channelArtist, expiryOf, isTopic, parseTitle, rank, type SearchEntry } from './rank.js';
 
@@ -37,6 +37,11 @@ interface VideoInfo {
   artist?: string;
   artists?: string[];
   album?: string;
+  album_artist?: string;
+  track_number?: number;
+  release_year?: number;
+  genre?: string;
+  description?: string;
   // The selected format, when a format was requested.
   url?: string;
   ext?: string;
@@ -59,6 +64,59 @@ export function identify(info: VideoInfo): ExternalHit {
     ...(info.duration ? { durationS: Math.round(info.duration) } : {}),
     ...(info.thumbnail ? { coverUrl: info.thumbnail } : {}),
   };
+}
+
+/** YouTube's own genre field is usually just "Music", which says nothing about the song. */
+const EMPTY_GENRES = new Set(['music', 'entertainment', 'people & blogs', 'film & animation']);
+
+/**
+ * The identity a kept song is filed and tagged under.
+ *
+ * Without AI: YouTube Music's own fields where the video has them, then the title parsed and
+ * cleaned (identify()), plus the release year and track number when YouTube states them.
+ *
+ * With "Allow AI to cleanup and retag…" on and an OpenAI key in crate, the model names the song
+ * from the video's title, channel and description — artist, title, album, year, genre — and
+ * crate checks the answer against that evidence before it is used (a name that appears nowhere
+ * in it is refused). Anything the model leaves empty keeps the plugin's own value. A confident
+ * AcoustID fingerprint in crate still outranks both.
+ */
+export async function nameIt(
+  ctx: PluginContext,
+  meta: VideoInfo | null,
+  who: ExternalHit,
+): Promise<Omit<ExternalAcquired, 'file' | 'retag'>> {
+  const genre = meta?.genre && !EMPTY_GENRES.has(meta.genre.toLowerCase()) ? meta.genre : undefined;
+  let named: Omit<ExternalAcquired, 'file' | 'retag'> = {
+    artist: who.artist,
+    title: who.title,
+    ...(who.album ? { album: who.album } : {}),
+    ...(meta?.album_artist && meta.album_artist !== who.artist ? { albumArtist: meta.album_artist } : {}),
+    ...(meta?.track_number ? { trackNo: meta.track_number } : {}),
+    ...(meta?.release_year ? { year: meta.release_year } : {}),
+    ...(genre ? { genre } : {}),
+  };
+  if (!meta || ctx.settings.get('aiCleanup') !== true || !ctx.ai?.available()) return named;
+
+  const channel = meta.channel ?? meta.uploader;
+  const ai = await ctx.ai
+    .identifySong({
+      videoTitle: meta.title,
+      ...(channel ? { channel } : {}),
+      ...(meta.description ? { description: meta.description } : {}),
+      ...(meta.track ? { track: meta.track } : {}),
+      ...(meta.artists?.[0] ?? meta.artist ? { artist: meta.artists?.[0] ?? meta.artist } : {}),
+      ...(meta.album ? { album: meta.album } : {}),
+      ...(meta.release_year ? { releaseYear: meta.release_year } : {}),
+      ...(meta.duration ? { durationS: Math.round(meta.duration) } : {}),
+      guess: { artist: who.artist, title: who.title, ...(who.album ? { album: who.album } : {}) },
+    })
+    .catch(() => null);
+  if (ai) {
+    named = { ...named, ...ai };
+    ctx.log.info({ key: meta.id, artist: ai.artist, title: ai.title, album: ai.album }, 'youtube: named by AI');
+  }
+  return named;
 }
 
 function source(ctx: PluginContext, yt: Ytdlp): ExternalSource {
@@ -137,6 +195,7 @@ function source(ctx: PluginContext, yt: Ytdlp): ExternalSource {
       void sweep().catch(() => undefined);
       const meta = await info(key).catch(() => null);
       const who = meta ? identify(meta) : hit;
+      const named = await nameIt(ctx, meta, who);
 
       // --print after_move:filepath prints the FINAL path, after conversion — which is the only
       // path that exists once yt-dlp has finished, and saves guessing the extension.
@@ -162,12 +221,8 @@ function source(ctx: PluginContext, yt: Ytdlp): ExternalSource {
       const file = out.trim().split('\n').filter(Boolean).pop();
       if (!file) throw new Error('yt-dlp finished without saying where the file is');
       await stat(file);
-      return {
-        file,
-        artist: who.artist,
-        title: who.title,
-        ...(who.album ? { album: who.album } : {}),
-      };
+      // retag: yt-dlp wrote the VIDEO's title and channel into the file; crate writes the song's.
+      return { file, ...named, retag: true };
     },
   };
 }
@@ -181,6 +236,13 @@ const plugin: CratePlugin = {
     { key: 'maxResults', label: 'Results per search', type: 'number', default: 5, hint: 'At least this many YouTube songs per search — what a Subsonic app gets when the library has none. The web page asks for more when you press See more.' },
     { key: 'minDurationS', label: 'Shortest song (seconds)', type: 'number', default: 60, hint: 'Drops previews, intros and shorts.' },
     { key: 'maxDurationS', label: 'Longest song (seconds)', type: 'number', default: 900, hint: 'Drops full albums, mixes and hour-long loops.' },
+    {
+      key: 'aiCleanup',
+      label: 'Allow AI to cleanup and retag tracks downloaded from YouTube',
+      type: 'boolean',
+      default: false,
+      hint: "Uses crate's OpenAI key (Admin → Integrations) to name each kept song from its video — artist, title, album, year, genre — before it is tagged and filed. Off, the plugin tidies the video title itself. Either way the file is retagged.",
+    },
   ],
 
   source(ctx) {

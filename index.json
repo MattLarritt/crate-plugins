@@ -10,7 +10,7 @@
     {
       "id": "youtube",
       "name": "YouTube",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "description": "When a song is not in your library, find it on YouTube and play it straight away. Add it to your library from the ⋯ menu, the player's download button, or a star in a Subsonic app — or turn on keeping after thirty seconds of listening in Preferences. Works through OpenSubsonic too, so a phone client or a voice request just plays it.",
       "dir": "plugins/youtube/dist"
     }
