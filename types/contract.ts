@@ -188,6 +188,18 @@ export interface ExternalSource {
   describe(key: string): Promise<ExternalHit | null>;
   resolveStream(key: string): Promise<ExternalStream>;
   acquire(key: string, hit: ExternalHit): Promise<ExternalAcquired>;
+  /**
+   * Optional: the songs of a playlist at `url`, in order — or null when the link is not one of
+   * this source's. What "Import playlist from …" on crate's Playlists page reads. crate makes
+   * the playlist, adds what the library already has, and keeps the rest through `acquire`.
+   */
+  playlist?(url: string): Promise<ExternalPlaylist | null>;
+}
+
+/** A source's playlist: its name there, and its songs in order. */
+export interface ExternalPlaylist {
+  title: string;
+  hits: ExternalHit[];
 }
 
 export interface PluginSettingDef {

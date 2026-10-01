@@ -297,6 +297,20 @@ function expiryOf(url) {
 var FORMAT = "bestaudio[ext=m4a]/bestaudio";
 var watchUrl = (key) => `https://www.youtube.com/watch?v=${key}`;
 var KEY_RE = /^[A-Za-z0-9_-]{11}$/;
+var YOUTUBE_HOSTS = /* @__PURE__ */ new Set(["youtube.com", "www.youtube.com", "music.youtube.com", "m.youtube.com"]);
+function playlistId(url) {
+  let u;
+  try {
+    u = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  if (!YOUTUBE_HOSTS.has(u.hostname.toLowerCase())) return null;
+  const list = u.searchParams.get("list");
+  return list && /^[A-Za-z0-9_-]{10,80}$/.test(list) ? list : null;
+}
+var GONE = /^\[(deleted|private) video\]$/i;
 function identify(info) {
   const parsed = parseTitle(info.title);
   const channel = info.channel ?? info.uploader ?? "";
@@ -398,6 +412,26 @@ function source(ctx, yt) {
         ...expiryOf(i.url) ? { expiresAt: expiryOf(i.url) } : {}
       };
     },
+    async playlist(url) {
+      const id = playlistId(url);
+      if (!id) return null;
+      const out = await yt.run(["--flat-playlist", "-J", `https://www.youtube.com/playlist?list=${id}`], {
+        timeoutMs: 6e4
+      });
+      const parsed = JSON.parse(out);
+      const hits = (parsed.entries ?? []).filter((e) => KEY_RE.test(e.id) && (!e.ie_key || e.ie_key === "Youtube") && !GONE.test(e.title ?? "")).map((e) => {
+        const thumb = e.thumbnail ?? bestThumbnail(e.thumbnails);
+        return identify({
+          id: e.id,
+          title: e.title ?? "",
+          ...e.channel ? { channel: e.channel } : {},
+          ...e.uploader ? { uploader: e.uploader } : {},
+          ...e.duration ? { duration: e.duration } : {},
+          ...thumb ? { thumbnail: thumb } : {}
+        });
+      });
+      return { title: parsed.title?.trim() || "YouTube playlist", hits };
+    },
     async acquire(key, hit) {
       await mkdir2(dl, { recursive: true });
       void sweep().catch(() => void 0);
@@ -473,5 +507,6 @@ var index_default = plugin;
 export {
   index_default as default,
   identify,
-  nameIt
+  nameIt,
+  playlistId
 };

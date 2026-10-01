@@ -66,6 +66,11 @@ source(ctx) {
 }
 ```
 
+A source can also read **playlists**: add `playlist(url)`, returning `{ title, hits }` in order —
+or `null` when the link isn't one of yours, so another source can try it. crate then offers
+**Import playlist from <label>** on the Playlists page, makes the playlist, adds what the library
+already has, and keeps the rest through `acquire`, each landing in its place.
+
 `ExternalHit` fields: `key` (your own id for the song), `title`, `artist`, and optionally
 `album`, `durationS`, `coverUrl` (proxied by crate) and `score`.
 

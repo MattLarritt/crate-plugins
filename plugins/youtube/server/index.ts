@@ -24,6 +24,31 @@ const watchUrl = (key: string) => `https://www.youtube.com/watch?v=${key}`;
 /** Eleven characters of YouTube's alphabet. Anything else is not a key this plugin issued. */
 const KEY_RE = /^[A-Za-z0-9_-]{11}$/;
 
+const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'music.youtube.com', 'm.youtube.com']);
+
+/**
+ * The playlist id in a YouTube or YouTube Music link, or null when it is not one.
+ *
+ * Only the id is taken — the rest of the link (playnext, si, a video it was opened on) is
+ * dropped, and the playlist is read from www.youtube.com, which is quicker than YouTube Music
+ * for the same list (3 seconds against 7, measured) and does not stop at 99 songs.
+ */
+export function playlistId(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (!YOUTUBE_HOSTS.has(u.hostname.toLowerCase())) return null;
+  const list = u.searchParams.get('list');
+  return list && /^[A-Za-z0-9_-]{10,80}$/.test(list) ? list : null;
+}
+
+/** Placeholders YouTube leaves in a playlist where a video used to be. */
+const GONE = /^\[(deleted|private) video\]$/i;
+
 /** The parts of yt-dlp's full info JSON this plugin reads. */
 interface VideoInfo {
   id: string;
@@ -188,6 +213,33 @@ function source(ctx: PluginContext, yt: Ytdlp): ExternalSource {
         ...(size ? { sizeBytes: size } : {}),
         ...(expiryOf(i.url) ? { expiresAt: expiryOf(i.url) } : {}),
       };
+    },
+
+    async playlist(url) {
+      const id = playlistId(url);
+      if (!id) return null;
+      const out = await yt.run(['--flat-playlist', '-J', `https://www.youtube.com/playlist?list=${id}`], {
+        timeoutMs: 60_000,
+      });
+      const parsed = JSON.parse(out) as {
+        title?: string;
+        entries?: (SearchEntry & { ie_key?: string; thumbnails?: { url?: string; width?: number }[] })[];
+      };
+      const hits = (parsed.entries ?? [])
+        // Videos only, and not the placeholders a removed video leaves behind.
+        .filter((e) => KEY_RE.test(e.id) && (!e.ie_key || e.ie_key === 'Youtube') && !GONE.test(e.title ?? ''))
+        .map((e) => {
+          const thumb = e.thumbnail ?? bestThumbnail(e.thumbnails);
+          return identify({
+            id: e.id,
+            title: e.title ?? '',
+            ...(e.channel ? { channel: e.channel } : {}),
+            ...(e.uploader ? { uploader: e.uploader } : {}),
+            ...(e.duration ? { duration: e.duration } : {}),
+            ...(thumb ? { thumbnail: thumb } : {}),
+          });
+        });
+      return { title: parsed.title?.trim() || 'YouTube playlist', hits };
     },
 
     async acquire(key, hit) {

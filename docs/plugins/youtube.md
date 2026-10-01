@@ -35,6 +35,20 @@ reused, not duplicated) and filed as `Artist/Album/Title.m4a` — album `Singles
 doesn't name one. Keeps count against crate's daily download cap. From then on it is a library
 track, and any client that cached its YouTube id gets the library file.
 
+## Importing a playlist
+
+**Playlists → Import playlist from YouTube** takes a YouTube or YouTube Music playlist link —
+`https://music.youtube.com/playlist?list=…` or `https://www.youtube.com/playlist?list=…` — and
+makes a crate playlist of the same name, in the same order:
+
+- songs already on the server go straight in (and into your library),
+- the rest are kept, one at a time, and each joins the playlist **in its place** as it lands —
+  a hundred-song playlist fills in over a while, not all at once,
+- keeps count against the daily download cap; over it, the rest are left out and you're told
+  how many.
+
+Removed and private videos in the playlist are skipped.
+
 ## Naming and tags
 
 A video is titled for viewers — "Blur - Song 2 (Official Music Video) [HD]" on a channel called
