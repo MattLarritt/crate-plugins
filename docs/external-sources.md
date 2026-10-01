@@ -87,6 +87,13 @@ after a word-by-word match, so "song 2 by blur" still finds the copy you own —
 empty query (how clients sync), never past the first page, and never when the client asked for
 no songs.
 
+**Songs known by name.** Wherever the web page shows a song the library doesn't hold — a
+Discover tile, an album's tracklist, a playlist entry — it offers a play button for a source's
+copy. crate searches every enabled source for `artist title` and takes the first hit that is
+*surely* that song: every word of the title and the artist, not a live take, cover or remix
+unless one was asked for, and a similar length. Otherwise it offers nothing. Your `search`
+needs nothing extra for this — but clean `artist` and `title` fields are what let a hit pass.
+
 **Streaming.** crate resolves the stream once per song however many requests arrive together,
 caches the URL until shortly before `expiresAt`, and resolves again once if the far end refuses a
 stale one. Clients asking for a format or a bitrate get a live transcode from the URL. The
